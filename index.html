@@ -44,7 +44,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "1.10.0";
+const APP_VERSION = "2.0.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -168,12 +168,14 @@ const lsGet = (k, fallback) => { try { const v = localStorage.getItem(k); return
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 // ---------- supabase row <-> app object ----------
-const rowToEvent = (r) => ({ id: r.id, title: r.title, date: r.date, endDate: r.end_date || "", time: r.time || "", notes: r.notes || "", phone: r.phone || "", location: r.location || "", recur: r.recur || "none", memberIds: r.member_ids || [], ts: r.ts, by: r.by_member, visibility: "family" });
-const eventToRow = (e) => ({ id: e.id, title: e.title, date: e.date, end_date: e.endDate || null, time: e.time || null, notes: e.notes || null, phone: e.phone || null, location: e.location || null, recur: e.recur || "none", member_ids: e.memberIds, ts: e.ts, by_member: e.by || null });
-const rowToTask = (r) => ({ id: r.id, title: r.title, dueDate: r.due_date || "", notes: r.notes || "", done: !!r.done, memberIds: r.member_ids || [], ts: r.ts, by: r.by_member });
-const taskToRow = (t) => ({ id: t.id, title: t.title, due_date: t.dueDate || null, notes: t.notes || null, done: !!t.done, member_ids: t.memberIds, ts: t.ts, by_member: t.by || null });
-const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "weekly", memberIds: r.member_ids || [], anchorPeriod: r.anchor_period || 0, anchorIndex: r.anchor_index || 0, lastDone: r.last_done || null, ts: r.ts, by: r.by_member });
-const choreToRow = (c) => ({ id: c.id, title: c.title, cadence: c.cadence, member_ids: c.memberIds, anchor_period: c.anchorPeriod || 0, anchor_index: c.anchorIndex || 0, last_done: c.lastDone || null, ts: c.ts, by_member: c.by || null });
+const rowToEvent = (r) => ({ id: r.id, title: r.title, date: r.date, endDate: r.end_date || "", time: r.time || "", notes: r.notes || "", phone: r.phone || "", location: r.location || "", recur: r.recur || "none", memberIds: r.member_ids || [], doneOn: r.done_on || [], cleared: !!r.cleared, ts: r.ts, by: r.by_member, visibility: "family" });
+const eventToRow = (e) => ({ id: e.id, title: e.title, date: e.date, end_date: e.endDate || null, time: e.time || null, notes: e.notes || null, phone: e.phone || null, location: e.location || null, recur: e.recur || "none", member_ids: e.memberIds, done_on: e.doneOn || [], cleared: !!e.cleared, ts: e.ts, by_member: e.by || null });
+const rowToTask = (r) => ({ id: r.id, title: r.title, dueDate: r.due_date || "", notes: r.notes || "", done: !!r.done, cleared: !!r.cleared, memberIds: r.member_ids || [], ts: r.ts, by: r.by_member });
+const taskToRow = (t) => ({ id: t.id, title: t.title, due_date: t.dueDate || null, notes: t.notes || null, done: !!t.done, cleared: !!t.cleared, member_ids: t.memberIds, ts: t.ts, by_member: t.by || null });
+const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "weekly", memberIds: r.member_ids || [], anchorPeriod: r.anchor_period || 0, anchorIndex: r.anchor_index || 0, lastDone: r.last_done || null, clearedPeriod: r.cleared_period ?? null, ts: r.ts, by: r.by_member });
+const choreToRow = (c) => ({ id: c.id, title: c.title, cadence: c.cadence, member_ids: c.memberIds, anchor_period: c.anchorPeriod || 0, anchor_index: c.anchorIndex || 0, last_done: c.lastDone || null, cleared_period: c.clearedPeriod ?? null, ts: c.ts, by_member: c.by || null });
+const rowToCleared = (r) => ({ id: r.id, kind: r.kind, refId: r.ref_id || null, title: r.title, detail: r.detail || "", memberIds: r.member_ids || [], clearedAt: r.cleared_at, by: r.by_member || null });
+const clearedToRow = (h) => ({ id: h.id, kind: h.kind, ref_id: h.refId || null, title: h.title, detail: h.detail || null, member_ids: h.memberIds || [], cleared_at: h.clearedAt, by_member: h.by || null });
 const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, favId: r.fav_id || null, checked: !!r.checked, lastStore: r.last_store || "", lastPrice: r.last_price == null ? "" : r.last_price, ts: r.ts, by: r.by_member });
 const shopToRow = (s) => ({ id: s.id, name: s.name, store: s.store || null, price: (s.price === "" || s.price == null) ? null : Number(s.price), fav_id: s.favId || null, checked: !!s.checked, last_store: s.lastStore || null, last_price: (s.lastPrice === "" || s.lastPrice == null) ? null : Number(s.lastPrice), ts: s.ts, by_member: s.by || null });
 const rowToFav = (r) => ({ id: r.id, name: r.name, history: r.history || [] });
@@ -194,6 +196,7 @@ function App() {
   const [shop, setShop] = useState([]);
   const [favorites, setFavorites] = useState([]);
   const [purchases, setPurchases] = useState([]);
+  const [cleared, setCleared] = useState([]);   // cleared history (tasks/events/chores)
   const [privEvents, setPrivEvents] = useState(() => lsGet("famcal:private", []));
   const [me, setMe] = useState(() => lsGet("famcal:me", null));
   const [lastSeen, setLastSeen] = useState(() => lsGet("famcal:seen", null));
@@ -210,6 +213,7 @@ function App() {
   const [shopEditing, setShopEditing] = useState(null);
   const [favManage, setFavManage] = useState(false);
   const [historyView, setHistoryView] = useState(false);
+  const [clearedView, setClearedView] = useState(null);  // null | 'task' | 'event' | 'chore'
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -218,7 +222,7 @@ function App() {
   // ---- fetch everything ----
   const fetchAll = useCallback(async () => {
     try {
-      const [f, e, t, c, sh, fv, pu] = await Promise.all([
+      const [f, e, t, c, sh, fv, pu, cl] = await Promise.all([
         sb.from("family").select("*").eq("id", 1).maybeSingle(),
         sb.from("events").select("*"),
         sb.from("tasks").select("*"),
@@ -226,8 +230,9 @@ function App() {
         sb.from("shop").select("*"),
         sb.from("favorites").select("*"),
         sb.from("purchases").select("*"),
+        sb.from("cleared_history").select("*"),
       ]);
-      if (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error) throw (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error);
+      if (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error || cl.error) throw (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error || cl.error);
       setFam(f.data ? { name: f.data.name, members: f.data.members || [], passcode: f.data.passcode || null, adminPin: f.data.admin_pin || null } : null);
       setEvents((e.data || []).map(rowToEvent));
       setTasks((t.data || []).map(rowToTask));
@@ -235,6 +240,7 @@ function App() {
       setShop((sh.data || []).map(rowToShop));
       setFavorites((fv.data || []).map(rowToFav));
       setPurchases((pu.data || []).map(rowToPurchase));
+      setCleared((cl.data || []).map(rowToCleared));
       setOffline(false);
     } catch (err) {
       console.error("fetch failed", err);
@@ -355,6 +361,76 @@ function App() {
     fetchAll();
   };
 
+  // ----- swipe-to-clear (only on already-done items) + cleared history -----
+  const logCleared = (kind, refId, title, detail, memberIds) =>
+    sb.from("cleared_history").insert(clearedToRow({
+      id: uid(), kind, refId, title, detail: detail || "", memberIds: memberIds || [],
+      clearedAt: Date.now(), by: me || null,
+    }));
+
+  // task: must be done. one-off, so it's gone (cleared=true) after logging.
+  const clearTask = async (id) => {
+    const t = tasks.find((x) => x.id === id);
+    if (!t || !t.done) return;
+    setSyncing(true);
+    await logCleared("task", t.id, t.title, dueLabel(t.dueDate), t.memberIds);
+    await sb.from("tasks").update({ cleared: true }).eq("id", id);
+    await fetchAll(); setSyncing(false);
+  };
+
+  // event occurrence: only when this date is marked done. recurring events
+  // reappear on their next occurrence automatically; one-off events get cleared.
+  const clearEventOccurrence = async (ev) => {
+    const dateK = ev.date; // the occurrence day
+    const isDone = (ev.doneOn || []).includes(dateK);
+    if (!isDone) return;
+    setSyncing(true);
+    const recurring = ev.recur && ev.recur !== "none";
+    await logCleared("event", ev.id, ev.title, fmtLong(dateK), ev.memberIds);
+    if (recurring) {
+      // keep the series, just drop this date from doneOn so it's tidy;
+      // the next occurrence shows normally.
+      const nextDoneOn = (ev.doneOn || []).filter((d) => d !== dateK);
+      await sb.from("events").update({ done_on: nextDoneOn }).eq("id", ev.id);
+    } else {
+      await sb.from("events").update({ cleared: true }).eq("id", ev.id);
+    }
+    await fetchAll(); setSyncing(false);
+  };
+  // mark/unmark an event occurrence done (per date)
+  const toggleEventDone = async (ev) => {
+    const dateK = ev.date;
+    const cur = ev.doneOn || [];
+    const nextDoneOn = cur.includes(dateK) ? cur.filter((d) => d !== dateK) : [...cur, dateK];
+    setEvents((list) => list.map((x) => (x.id === ev.id ? { ...x, doneOn: nextDoneOn } : x)));
+    await sb.from("events").update({ done_on: nextDoneOn }).eq("id", ev.id);
+    fetchAll();
+  };
+
+  // chore: only when done this period. recurring by nature — reappears next period.
+  const clearChore = async (id) => {
+    const c = chores.find((x) => x.id === id);
+    if (!c) return;
+    const p = periodOf(c);
+    const doneThis = c.lastDone && c.lastDone.period === p;
+    if (!doneThis) return;
+    const turnMember = (fam?.members || []).find((m) => m.id === whoseTurn(c));
+    setSyncing(true);
+    await logCleared("chore", c.id, c.title, turnMember ? `${turnMember.name}'s turn` : cadenceLabel(c.cadence), c.memberIds);
+    await sb.from("chores").update({ cleared_period: p }).eq("id", id);
+    await fetchAll(); setSyncing(false);
+  };
+
+  const deleteCleared = async (id) => {
+    await sb.from("cleared_history").delete().eq("id", id);
+    fetchAll();
+  };
+  const clearAllCleared = async (kind) => {
+    setSyncing(true);
+    await sb.from("cleared_history").delete().eq("kind", kind);
+    await fetchAll(); setSyncing(false);
+  };
+
   // ----- shopping -----
   const addShopItem = async (item) => {
     setSyncing(true);
@@ -455,11 +531,16 @@ function App() {
 
   const memberById = Object.fromEntries(fam.members.map((m) => [m.id, m]));
   const colorOf = (ev) => (memberById[peopleOf(ev)[0]] || {}).color || "#94a3b8";
-  const allEvents = [...events, ...privEvents];
+  // hide events swiped away (one-off cleared ones); recurring ones stay
+  const allEvents = [...events.filter((e) => !e.cleared), ...privEvents];
   const tk = todayKey();
 
-  const openTasks = tasks.filter((t) => !t.done).sort((a,b) => ((a.dueDate||"9999") < (b.dueDate||"9999") ? -1 : 1));
-  const doneTasks = tasks.filter((t) => t.done);
+  // tasks that are swiped-cleared drop off entirely
+  const activeTasks = tasks.filter((t) => !t.cleared);
+  const openTasks = activeTasks.filter((t) => !t.done).sort((a,b) => ((a.dueDate||"9999") < (b.dueDate||"9999") ? -1 : 1));
+  const doneTasks = activeTasks.filter((t) => t.done);
+  // chores swiped away this period drop off until next period
+  const activeChores = chores.filter((c) => !(c.clearedPeriod != null && c.clearedPeriod === periodOf(c)));
 
   const newForMe = (me && lastSeen)
     ? [...allEvents, ...tasks].filter((it) => it.ts && it.ts > lastSeen && it.by && it.by !== me && peopleOf(it).includes(me))
@@ -490,8 +571,8 @@ function App() {
       onToggle={toggleTask} onOpenAll={() => setView("tasks")} onEdit={setTaskEditing} />
   );
   const choreSummary = (
-    <ChoreSummary chores={chores} memberById={memberById}
-      onComplete={completeChore} onOpenAll={() => setView("chores")} onEdit={setChoreEditing} />
+    <ChoreSummary chores={activeChores} memberById={memberById}
+      onComplete={completeChore} onClear={clearChore} onOpenAll={() => setView("chores")} onEdit={setChoreEditing} />
   );
 
   return (
@@ -618,10 +699,11 @@ function App() {
       </>)}
       {view === "tasks" && (
         <TasksView openTasks={openTasks} doneTasks={doneTasks} memberById={memberById}
-          onToggle={toggleTask} onEdit={setTaskEditing} />
+          onToggle={toggleTask} onEdit={setTaskEditing} onClear={clearTask}
+          onHistory={() => setClearedView("task")} historyCount={cleared.filter((h) => h.kind === "task").length} />
       )}
       {view === "chores" && (
-        <ChoresView chores={chores} memberById={memberById} onComplete={completeChore} onEdit={setChoreEditing} />
+        <ChoresView chores={activeChores} memberById={memberById} onComplete={completeChore} onClear={clearChore} onEdit={setChoreEditing} />
       )}
       {view === "shop" && (
         <ShoppingView shop={shop} favorites={favorites}
@@ -667,7 +749,9 @@ function App() {
       {/* event detail */}
       {detail && !editing && (
         <EventDetail ev={detail} memberById={memberById} colorOf={colorOf}
-          onClose={() => setDetail(null)} onEdit={() => setEditing(detail)} onDelete={() => deleteEvent(detail.id)} />
+          onClose={() => setDetail(null)} onEdit={() => setEditing(detail)} onDelete={() => deleteEvent(detail.id)}
+          onToggleDone={(ev) => { toggleEventDone(ev); setDetail((d) => d ? { ...d, doneOn: (d.doneOn||[]).includes(ev.date) ? (d.doneOn||[]).filter((x)=>x!==ev.date) : [...(d.doneOn||[]), ev.date] } : d); }}
+          onClearOccurrence={(ev) => { clearEventOccurrence(ev); setDetail(null); }} />
       )}
 
       {/* event editor */}
@@ -733,6 +817,12 @@ function App() {
       {/* purchase history */}
       {historyView && (
         <PurchaseHistory purchases={purchases} memberById={memberById} onDelete={deletePurchase} onClearAll={clearAllPurchases} onReadd={readdFromHistory} onClose={() => setHistoryView(false)} />
+      )}
+
+      {/* cleared history (tasks / events / chores) */}
+      {clearedView && (
+        <ClearedHistory kind={clearedView} items={cleared.filter((h) => h.kind === clearedView)}
+          memberById={memberById} onDelete={deleteCleared} onClearAll={() => clearAllCleared(clearedView)} onClose={() => setClearedView(null)} />
       )}
     </Shell>
   );
@@ -808,10 +898,12 @@ function DaySheet({ dayKey, allEvents, memberById, colorOf, onClose, onDetail, o
   );
 }
 
-function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete }) {
+function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete, onToggleDone, onClearOccurrence }) {
   const tel = digitsOf(ev.phone);
+  const isDone = (ev.doneOn || []).includes(ev.date);
   return (
     <Sheet onClose={onClose} title="Event">
+      {isDone && <p className="text-[11px] font-bold text-teal-700 pb-1">✓ Marked done</p>}
       <div className="rounded-2xl bg-white border border-slate-200 p-4" style={{ borderLeft: `5px solid ${colorOf(ev)}` }}>
         <h3 className="text-lg font-bold text-slate-800">
           {ev.title}{ev.visibility === "private" && <PrivateBadge />}
@@ -847,6 +939,21 @@ function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete }) {
           {ev.location && (
             <a href={`https://maps.google.com/?q=${encodeURIComponent(ev.location)}`} target="_blank" rel="noopener"
               className="flex-1 py-3 rounded-xl bg-white border border-slate-300 text-center text-sm font-semibold text-slate-700">🗺️ Directions</a>
+          )}
+        </div>
+      )}
+
+      {/* mark done / clear this occurrence */}
+      {onToggleDone && ev.visibility !== "private" && (
+        <div className="flex gap-2 pt-3">
+          <button onClick={() => onToggleDone(ev)}
+            className={`flex-1 py-3 rounded-xl text-sm font-semibold border ${isDone ? "bg-teal-50 border-teal-600 text-teal-800" : "bg-white border-slate-300 text-slate-700"}`}>
+            {isDone ? "✓ Done" : "Mark done"}
+          </button>
+          {isDone && (
+            <button onClick={() => onClearOccurrence(ev)} className="flex-1 py-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold">
+              Clear{ev.recur !== "none" ? " (returns next time)" : ""}
+            </button>
           )}
         </div>
       )}
@@ -1143,7 +1250,7 @@ function TaskSummary({ openTasks, doneCount, memberById, onToggle, onOpenAll, on
   );
 }
 
-function ChoreSummary({ chores, memberById, onComplete, onOpenAll, onEdit }) {
+function ChoreSummary({ chores, memberById, onComplete, onClear, onOpenAll, onEdit }) {
   if (!chores || chores.length === 0) return null;
   const show = chores.slice(0, 5);
   return (
@@ -1188,7 +1295,7 @@ function ChoreSummary({ chores, memberById, onComplete, onOpenAll, onEdit }) {
   );
 }
 
-function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
+function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit, onClear, onHistory, historyCount }) {
   const tk = todayKey();
   const overdue = openTasks.filter((t) => t.dueDate && t.dueDate < tk);
   const today = openTasks.filter((t) => t.dueDate === tk);
@@ -1202,7 +1309,7 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
         <p className={`text-[11px] font-bold uppercase tracking-wide pb-1.5 ${tone || "text-slate-400"}`}>{label}</p>
         <ul className="space-y-1.5">
           {list.map((t) => (
-            <li key={t.id} className="rounded-xl bg-white border border-slate-200">
+            <li key={t.id} className="rounded-xl border border-slate-200 overflow-hidden">
               <TaskRow t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} />
             </li>
           ))}
@@ -1212,6 +1319,9 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
 
   return (
     <div className="px-4 pb-24">
+      <div className="flex justify-end pb-2">
+        <button onClick={onHistory} className="text-xs font-semibold text-teal-700">Cleared{historyCount ? ` (${historyCount})` : ""}</button>
+      </div>
       {openTasks.length === 0 && doneTasks.length === 0 && (
         <p className="text-sm text-slate-400 text-center py-14">No tasks yet. Tap + to add the first one —<br/>groceries, permission slips, fix the fence…</p>
       )}
@@ -1227,8 +1337,8 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
           {showDone && (
             <ul className="space-y-1.5 pt-2">
               {doneTasks.map((t) => (
-                <li key={t.id} className="rounded-xl bg-slate-100/70 border border-slate-200">
-                  <TaskRow t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} />
+                <li key={t.id} className="rounded-xl border border-slate-200 overflow-hidden">
+                  <TaskRow t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} onClear={onClear} />
                 </li>
               ))}
             </ul>
@@ -1239,10 +1349,10 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
   );
 }
 
-function TaskRow({ t, memberById, onToggle, onEdit, compact }) {
+function TaskRow({ t, memberById, onToggle, onEdit, onClear, compact }) {
   const overdue = t.dueDate && !t.done && t.dueDate < todayKey();
-  return (
-    <div className={`flex items-center gap-3 ${compact ? "py-2" : "p-3"} ${overdue ? "bg-red-50/70 rounded-xl" : ""}`}>
+  const inner = (
+    <div className={`flex items-center gap-3 ${compact ? "py-2" : "p-3"} ${overdue ? "bg-red-50/70 rounded-xl" : "bg-white"}`}>
       <button onClick={() => onToggle(t.id)} aria-label={t.done ? "Mark not done" : "Mark done"}
         className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${t.done ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
         {t.done && <span className="text-xs font-bold">✓</span>}
@@ -1250,8 +1360,8 @@ function TaskRow({ t, memberById, onToggle, onEdit, compact }) {
       <button onClick={() => onEdit(t)} className="flex-1 min-w-0 text-left">
         <span className={`block text-sm font-semibold truncate ${t.done ? "line-through text-slate-400" : "text-slate-800"}`}>{t.title}</span>
         <span className={`block text-[11px] ${overdue ? "text-red-500 font-semibold" : "text-slate-400"}`}>
-          {dueLabel(t.dueDate)}
-          {peopleOf(t).length > 0 && <> · {peopleOf(t).map((id) => (memberById[id]||{}).name).filter(Boolean).join(", ")}</>}
+          {t.done && onClear ? "Done — swipe right to clear" : dueLabel(t.dueDate)}
+          {!t.done && peopleOf(t).length > 0 && <> · {peopleOf(t).map((id) => (memberById[id]||{}).name).filter(Boolean).join(", ")}</>}
         </span>
       </button>
       <span className="flex -space-x-1 shrink-0">
@@ -1261,6 +1371,8 @@ function TaskRow({ t, memberById, onToggle, onEdit, compact }) {
       </span>
     </div>
   );
+  if (onClear) return <SwipeRow enabled={t.done} onSwipe={() => onClear(t.id)}>{inner}</SwipeRow>;
+  return inner;
 }
 
 function TaskEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
@@ -1313,9 +1425,13 @@ function TaskEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
 // ============================================================
 // CHORES
 // ============================================================
-function ChoresView({ chores, memberById, onComplete, onEdit }) {
+function ChoresView({ chores, memberById, onComplete, onClear, onEdit, onHistory, historyCount }) {
+  const curP = (c) => periodOf(c);
   return (
     <div className="px-4 pb-24">
+      <div className="flex justify-end pb-2">
+        <button onClick={onHistory} className="text-xs font-semibold text-teal-700">Cleared{historyCount ? ` (${historyCount})` : ""}</button>
+      </div>
       {chores.length === 0 && (
         <div className="text-center py-14">
           <p className="text-4xl pb-2">🔄</p>
@@ -1331,8 +1447,10 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
           const solo = order.length === 1;
           const nextId = whoseTurn(c, c.cadence === "daily" ? toKey(addDays(new Date(),1)) : toKey(addDays(new Date(),7)));
           const next = memberById[nextId];
-          return (
-            <li key={c.id} className="rounded-2xl bg-white border border-slate-200 p-3.5"
+          // overdue = missed a full period (last done more than one period ago, or never and created earlier)
+          const overdue = !done && c.lastDone && c.lastDone.period < curP(c) - 1;
+          const inner = (
+            <li className={`rounded-2xl border p-3.5 ${overdue ? "bg-red-50/70 border-red-200" : "bg-white border-slate-200"}`}
               style={{ borderLeft: `5px solid ${(turn||{}).color || "#94a3b8"}` }}>
               <div className="flex items-start gap-3">
                 <button onClick={() => onComplete(c.id)} aria-label={done ? "Undo" : "Mark done"}
@@ -1343,12 +1461,12 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
                   <span className="block text-sm font-bold text-slate-800">{c.title}</span>
                   {done ? (
                     <span className="block text-xs text-teal-700 font-semibold pt-0.5">
-                      Done this {c.cadence === "daily" ? "day" : "week"} ✓{solo ? "" : next ? ` — ${next.name}'s turn next` : ""}
+                      Done this {c.cadence === "daily" ? "day" : "week"} ✓ — swipe right to clear{solo ? "" : next ? ` · ${next.name} next` : ""}
                     </span>
                   ) : (
                     <span className="block text-xs pt-0.5">
-                      <span className="font-bold" style={{ color: (turn||{}).color }}>{turn ? (solo ? turn.name : `${turn.name}'s turn`) : "—"}</span>
-                      <span className="text-slate-400"> · {cadenceLabel(c.cadence)}</span>
+                      <span className="font-bold" style={{ color: overdue ? "#dc2626" : (turn||{}).color }}>{turn ? (solo ? turn.name : `${turn.name}'s turn`) : "—"}</span>
+                      <span className={overdue ? "text-red-500 font-semibold" : "text-slate-400"}> · {overdue ? "overdue" : cadenceLabel(c.cadence)}</span>
                     </span>
                   )}
                   {!solo && (
@@ -1368,11 +1486,16 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
               </div>
             </li>
           );
+          return (
+            <div key={c.id} className="rounded-2xl overflow-hidden">
+              <SwipeRow enabled={done} onSwipe={() => onClear(c.id)}>{inner}</SwipeRow>
+            </div>
+          );
         })}
       </ul>
       {chores.length > 0 && (
         <p className="text-[11px] text-slate-400 text-center pt-4">
-          Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat.
+          Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat. Swipe a done chore right to clear it (it returns next time).
         </p>
       )}
     </div>
@@ -1574,6 +1697,41 @@ function PurchaseHistory({ purchases, memberById, onDelete, onClearAll, onReadd,
           <button onClick={() => { if (confirm("Clear the entire purchase history? This can't be undone.")) onClearAll(); }}
             className="w-full py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">
             Clear all history
+          </button>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+function ClearedHistory({ kind, items, memberById, onDelete, onClearAll, onClose }) {
+  const label = kind === "task" ? "Cleared tasks" : kind === "event" ? "Cleared events" : "Cleared chores";
+  const sorted = [...items].sort((a, b) => (b.clearedAt || 0) - (a.clearedAt || 0));
+  const whenStr = (ms) => {
+    if (!ms) return "";
+    const d = new Date(ms);
+    return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}, ${fmtTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`)}`;
+  };
+  return (
+    <Sheet onClose={onClose} title={label}>
+      {sorted.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">Nothing cleared yet.<br />Swipe a completed item right to clear it — it'll be logged here.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {sorted.map((h) => (
+            <div key={h.id} className="flex items-center gap-3 rounded-xl bg-white border border-slate-200 p-3">
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-semibold text-slate-800 truncate line-through decoration-slate-300">{h.title}</span>
+                <span className="block text-[11px] text-slate-400 truncate">
+                  {[h.detail, h.by && memberById[h.by] ? `by ${memberById[h.by].name}` : null, whenStr(h.clearedAt)].filter(Boolean).join(" · ")}
+                </span>
+              </span>
+              <button onClick={() => onDelete(h.id)} aria-label="Remove from history" className="shrink-0 text-slate-300 px-1 text-sm">✕</button>
+            </div>
+          ))}
+          <button onClick={() => { if (confirm("Clear this entire history list? This can't be undone.")) onClearAll(); }}
+            className="mt-3 w-full py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">
+            Clear all
           </button>
         </div>
       )}
@@ -1914,6 +2072,59 @@ function FamilyEditor({ fam, onSave, onClose }) {
 // ============================================================
 // SMALL UI
 // ============================================================
+// Swipe-right-to-clear wrapper. Only active when `enabled` (item is done).
+// Falls back gracefully: if you don't swipe far enough it snaps back.
+function SwipeRow({ enabled, onSwipe, children }) {
+  const [dx, setDx] = useState(0);
+  const [swiping, setSwiping] = useState(false);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const decided = useRef(null); // 'h' horizontal | 'v' vertical | null
+
+  const onStart = (e) => {
+    if (!enabled) return;
+    const t = e.touches ? e.touches[0] : e;
+    startX.current = t.clientX; startY.current = t.clientY; decided.current = null;
+    setSwiping(true);
+  };
+  const onMove = (e) => {
+    if (!enabled || !swiping) return;
+    const t = e.touches ? e.touches[0] : e;
+    const mx = t.clientX - startX.current;
+    const my = t.clientY - startY.current;
+    if (decided.current === null) {
+      if (Math.abs(mx) > 8 || Math.abs(my) > 8) decided.current = Math.abs(mx) > Math.abs(my) ? "h" : "v";
+    }
+    if (decided.current === "h") {
+      if (e.cancelable) e.preventDefault();       // stop the page scrolling while swiping
+      setDx(Math.max(0, mx));                       // only allow rightward
+    }
+  };
+  const onEnd = () => {
+    if (!enabled) return;
+    setSwiping(false);
+    if (dx > 90) { setDx(0); onSwipe && onSwipe(); }  // far enough → clear
+    else setDx(0);                                    // snap back
+  };
+
+  return (
+    <div className="relative overflow-hidden">
+      {/* green "cleared" backdrop revealed as you swipe */}
+      {enabled && dx > 0 && (
+        <div className="absolute inset-0 flex items-center px-4 bg-emerald-500 text-white text-sm font-bold rounded-xl">
+          ✓ Clear
+        </div>
+      )}
+      <div
+        onTouchStart={onStart} onTouchMove={onMove} onTouchEnd={onEnd}
+        style={{ transform: `translateX(${dx}px)`, transition: swiping ? "none" : "transform 0.2s ease" }}
+        className="relative">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function Collapsible({ storeKey, title, count, children, className }) {
   const [open, setOpen] = useState(() => lsGet(storeKey, true));
   const toggle = () => { const next = !open; setOpen(next); lsSet(storeKey, next); };
