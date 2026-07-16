@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="apple-mobile-web-app-title" content="FamCal" />
 <link rel="apple-touch-icon" href="icon-192.png" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📅</text></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%2314b8a6'/><rect x='24' y='28' width='52' height='46' rx='7' fill='white'/><rect x='24' y='28' width='52' height='14' rx='7' fill='%23E2564B'/><circle cx='38' cy='54' r='4' fill='%232F80ED'/><circle cx='50' cy='54' r='4' fill='%23E8A13A'/><circle cx='62' cy='54' r='4' fill='%238E5AC8'/><circle cx='38' cy='66' r='4' fill='%232F8F63'/><circle cx='50' cy='66' r='4' fill='%23D9538C'/><circle cx='62' cy='66' r='4' fill='%2326A69A'/></svg>" />
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -42,7 +42,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.7.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -55,6 +55,7 @@ const WEEKDAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const RECUR_LABELS = { none: "Doesn't repeat", weekly: "Every week", biweekly: "Every 2 weeks", monthly: "Every month", yearly: "Every year" };
+const CALENDAR_VIEWS = ["month", "week", "day", "board"];
 
 // ---------- date helpers ----------
 const toKey = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -158,10 +159,12 @@ const rowToTask = (r) => ({ id: r.id, title: r.title, dueDate: r.due_date || "",
 const taskToRow = (t) => ({ id: t.id, title: t.title, due_date: t.dueDate || null, notes: t.notes || null, done: !!t.done, member_ids: t.memberIds, ts: t.ts, by_member: t.by || null });
 const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "weekly", memberIds: r.member_ids || [], anchorPeriod: r.anchor_period || 0, anchorIndex: r.anchor_index || 0, lastDone: r.last_done || null, ts: r.ts, by: r.by_member });
 const choreToRow = (c) => ({ id: c.id, title: c.title, cadence: c.cadence, member_ids: c.memberIds, anchor_period: c.anchorPeriod || 0, anchor_index: c.anchorIndex || 0, last_done: c.lastDone || null, ts: c.ts, by_member: c.by || null });
-const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, favId: r.fav_id || null, checked: !!r.checked, ts: r.ts, by: r.by_member });
-const shopToRow = (s) => ({ id: s.id, name: s.name, store: s.store || null, price: (s.price === "" || s.price == null) ? null : Number(s.price), fav_id: s.favId || null, checked: !!s.checked, ts: s.ts, by_member: s.by || null });
+const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, favId: r.fav_id || null, checked: !!r.checked, lastStore: r.last_store || "", lastPrice: r.last_price == null ? "" : r.last_price, ts: r.ts, by: r.by_member });
+const shopToRow = (s) => ({ id: s.id, name: s.name, store: s.store || null, price: (s.price === "" || s.price == null) ? null : Number(s.price), fav_id: s.favId || null, checked: !!s.checked, last_store: s.lastStore || null, last_price: (s.lastPrice === "" || s.lastPrice == null) ? null : Number(s.lastPrice), ts: s.ts, by_member: s.by || null });
 const rowToFav = (r) => ({ id: r.id, name: r.name, history: r.history || [] });
 const favToRow = (f) => ({ id: f.id, name: f.name, history: f.history || [] });
+const rowToPurchase = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, date: r.date, by: r.by_member || null, favId: r.fav_id || null });
+const purchaseToRow = (p) => ({ id: p.id, name: p.name, store: p.store || null, price: (p.price === "" || p.price == null) ? null : Number(p.price), date: p.date, by_member: p.by || null, fav_id: p.favId || null });
 
 // ============================================================
 // APP
@@ -175,6 +178,7 @@ function App() {
   const [chores, setChores] = useState([]);
   const [shop, setShop] = useState([]);
   const [favorites, setFavorites] = useState([]);
+  const [purchases, setPurchases] = useState([]);
   const [privEvents, setPrivEvents] = useState(() => lsGet("famcal:private", []));
   const [me, setMe] = useState(() => lsGet("famcal:me", null));
   const [lastSeen, setLastSeen] = useState(() => lsGet("famcal:seen", null));
@@ -190,6 +194,7 @@ function App() {
   const [choreEditing, setChoreEditing] = useState(null);
   const [shopEditing, setShopEditing] = useState(null);
   const [favManage, setFavManage] = useState(false);
+  const [historyView, setHistoryView] = useState(false);
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -198,21 +203,23 @@ function App() {
   // ---- fetch everything ----
   const fetchAll = useCallback(async () => {
     try {
-      const [f, e, t, c, sh, fv] = await Promise.all([
+      const [f, e, t, c, sh, fv, pu] = await Promise.all([
         sb.from("family").select("*").eq("id", 1).maybeSingle(),
         sb.from("events").select("*"),
         sb.from("tasks").select("*"),
         sb.from("chores").select("*"),
         sb.from("shop").select("*"),
         sb.from("favorites").select("*"),
+        sb.from("purchases").select("*"),
       ]);
-      if (f.error || e.error || t.error || c.error || sh.error || fv.error) throw (f.error || e.error || t.error || c.error || sh.error || fv.error);
+      if (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error) throw (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error);
       setFam(f.data ? { name: f.data.name, members: f.data.members || [], passcode: f.data.passcode || null, adminPin: f.data.admin_pin || null } : null);
       setEvents((e.data || []).map(rowToEvent));
       setTasks((t.data || []).map(rowToTask));
       setChores((c.data || []).map(rowToChore));
       setShop((sh.data || []).map(rowToShop));
       setFavorites((fv.data || []).map(rowToFav));
+      setPurchases((pu.data || []).map(rowToPurchase));
       setOffline(false);
     } catch (err) {
       console.error("fetch failed", err);
@@ -356,8 +363,12 @@ function App() {
     await sb.from("shop").delete().eq("id", id);
     await fetchAll(); setSyncing(false); setShopEditing(null);
   };
-  // record purchase into the linked favorite's history, then remove item
+  // record a bought item into purchase history + its favorite's price memory, then remove it
   const recordBuy = async (item) => {
+    await sb.from("purchases").insert(purchaseToRow({
+      id: uid(), name: item.name, store: item.store || "",
+      price: item.price, date: todayKey(), by: me || null, favId: item.favId || null,
+    }));
     if (item.favId) {
       const fav = favorites.find((f) => f.id === item.favId);
       if (fav) {
@@ -367,16 +378,31 @@ function App() {
     }
     await sb.from("shop").delete().eq("id", item.id);
   };
-  const buyShopItem = async (id) => {
-    const item = shop.find((x) => x.id === id); if (!item) return;
+  const clearCheckedShop = async () => {
+    const checked = shop.filter((s) => s.checked);
+    if (checked.length === 0) return;
     setSyncing(true);
-    await recordBuy(item);
+    for (const item of checked) await recordBuy(item);
     await fetchAll(); setSyncing(false);
   };
-  const clearCheckedShop = async () => {
+  const deletePurchase = async (id) => {
+    await sb.from("purchases").delete().eq("id", id);
+    fetchAll();
+  };
+  const clearAllPurchases = async () => {
     setSyncing(true);
-    for (const item of shop.filter((s) => s.checked)) await recordBuy(item);
+    await sb.from("purchases").delete().neq("id", "");
     await fetchAll(); setSyncing(false);
+  };
+  const readdFromHistory = async (p) => {
+    if (shop.some((s) => s.name.toLowerCase() === p.name.toLowerCase())) return;
+    const fav = favorites.find((f) => f.name.toLowerCase() === p.name.toLowerCase());
+    await sb.from("shop").insert(shopToRow({
+      id: uid(), name: p.name, store: "", price: "",
+      favId: fav ? fav.id : null, lastStore: p.store || "", lastPrice: p.price ?? "",
+      checked: false, ts: Date.now(), by: me || null,
+    }));
+    fetchAll();
   };
 
   // ----- favorites -----
@@ -427,6 +453,7 @@ function App() {
   const todaysEvents = eventsMapForRange(allEvents, tk, tk)[tk] || [];
   const todaysTasks = openTasks.filter((t) => t.dueDate && t.dueDate <= tk);
 
+  const section = CALENDAR_VIEWS.includes(view) ? "calendar" : view;
   const headerTitle =
     view === "month" ? `${MONTHS[cursor.m]} ${cursor.y}`
     : view === "week" ? `${MONTHS[parseKey(weekAnchor).getMonth()]} ${parseKey(weekAnchor).getFullYear()}`
@@ -463,20 +490,38 @@ function App() {
         </div>
       </header>
 
-      {/* view toggle */}
-      <div className="px-4 pb-3 overflow-x-auto">
+      {/* section toggle (top level) */}
+      <div className="px-4 pb-2 overflow-x-auto">
         <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold w-fit whitespace-nowrap">
-          {[["month","Month"],["week","Week"],["day","Day"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["board","Board"]].map(([v,label]) => (
-            <button key={v} onClick={() => setView(v)}
-              className={`px-3.5 py-1.5 rounded-full transition-colors ${view === v ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
-              {label}
-              {v === "tasks" && openTasks.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-teal-700 text-white text-[9px] align-middle">{openTasks.length}</span>
-              )}
-            </button>
-          ))}
+          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"]].map(([sec,label]) => {
+            const active = section === sec;
+            const go = () => setView(sec === "calendar" ? (CALENDAR_VIEWS.includes(view) ? view : "month") : sec);
+            return (
+              <button key={sec} onClick={go}
+                className={`px-3.5 py-1.5 rounded-full transition-colors ${active ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
+                {label}
+                {sec === "tasks" && openTasks.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-teal-700 text-white text-[9px] align-middle">{openTasks.length}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
+
+      {/* calendar sub-views (only when in Calendar section) */}
+      {section === "calendar" && (
+        <div className="px-4 pb-3 overflow-x-auto">
+          <div className="flex gap-1 text-xs font-semibold w-fit whitespace-nowrap">
+            {[["month","Month"],["week","Week"],["day","Day"],["board","Board"]].map(([v,label]) => (
+              <button key={v} onClick={() => setView(v)}
+                className={`px-3 py-1 rounded-lg transition-colors ${view === v ? "bg-teal-700 text-white" : "bg-slate-100 text-slate-500"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* member legend / me picker */}
       <div className="flex gap-2 px-4 pb-3 overflow-x-auto">
@@ -558,8 +603,9 @@ function App() {
       )}
       {view === "shop" && (
         <ShoppingView shop={shop} favorites={favorites}
-          onToggle={toggleShopChecked} onBuy={buyShopItem} onEdit={setShopEditing} onClearChecked={clearCheckedShop}
-          onAddFav={addFavoriteToList} onSaveFav={saveItemAsFavorite} onManageFavs={() => setFavManage(true)} />
+          onToggle={toggleShopChecked} onEdit={setShopEditing} onClearChecked={clearCheckedShop}
+          onAddFav={addFavoriteToList} onSaveFav={saveItemAsFavorite} onManageFavs={() => setFavManage(true)}
+          onHistory={() => setHistoryView(true)} historyCount={purchases.length} />
       )}
       {view === "board" && (
         <Board members={fam.members} allEvents={allEvents} onDetail={setDetail} onAdd={(mId) => openNew(tk, mId)} />
@@ -660,6 +706,11 @@ function App() {
       {/* favorites manager */}
       {favManage && (
         <FavoritesManager favorites={favorites} onAdd={addFavorite} onRemove={removeFavorite} onAddToList={addFavoriteToList} onClose={() => setFavManage(false)} />
+      )}
+
+      {/* purchase history */}
+      {historyView && (
+        <PurchaseHistory purchases={purchases} memberById={memberById} onDelete={deletePurchase} onClearAll={clearAllPurchases} onReadd={readdFromHistory} onClose={() => setHistoryView(false)} />
       )}
     </Shell>
   );
@@ -1311,7 +1362,7 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
 // ============================================================
 // SHOPPING
 // ============================================================
-function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked, onAddFav, onSaveFav, onManageFavs }) {
+function ShoppingView({ shop, favorites, onToggle, onEdit, onClearChecked, onAddFav, onSaveFav, onManageFavs, onHistory, historyCount }) {
   const favById = Object.fromEntries(favorites.map((f) => [f.id, f]));
   const checkedCount = shop.filter((s) => s.checked).length;
   const onListFavIds = new Set(shop.map((s) => s.favId).filter(Boolean));
@@ -1322,7 +1373,10 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
       <div className="pb-3">
         <div className="flex items-center justify-between pb-1.5">
           <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Favorites — tap to add</p>
-          <button onClick={onManageFavs} className="text-xs font-semibold text-teal-700">Manage</button>
+          <div className="flex gap-3">
+            <button onClick={onHistory} className="text-xs font-semibold text-teal-700">History{historyCount ? ` (${historyCount})` : ""}</button>
+            <button onClick={onManageFavs} className="text-xs font-semibold text-teal-700">Favorites</button>
+          </div>
         </div>
         {favorites.length === 0 ? (
           <p className="text-xs text-slate-400">No favorites yet. Add an item, then tap ☆ to save it as a favorite for reuse.</p>
@@ -1366,14 +1420,16 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
                       {s.name}
                     </span>
                     <span className="block text-[11px] text-slate-400 truncate">
-                      {[s.store, money(s.price)].filter(Boolean).join(" · ") || (hint ? hint : "tap to add store/price")}
+                      {[s.store, money(s.price)].filter(Boolean).join(" · ")
+                        || (hint ? hint
+                          : (s.lastStore || s.lastPrice !== "" ? `Last: ${money(s.lastPrice)}${s.lastStore ? ` ${s.lastStore}` : ""}`.trim()
+                            : "tap to add store/price"))}
                     </span>
                   </button>
                   {!s.favId && (
                     <button onClick={() => onSaveFav(s)} aria-label="Save as favorite" title="Save as favorite" className="text-slate-300 text-lg px-1">☆</button>
                   )}
                   {s.favId && <span className="text-amber-400 text-lg px-1" title="Saved favorite">★</span>}
-                  <button onClick={() => onBuy(s.id)} className="shrink-0 px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-bold">Bought</button>
                 </div>
               </li>
             );
@@ -1382,14 +1438,61 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
       )}
 
       {checkedCount > 0 && (
-        <button onClick={onClearChecked} className="mt-4 w-full py-3 rounded-xl bg-slate-800 text-white text-sm font-semibold">
-          Done shopping — clear {checkedCount} checked {checkedCount === 1 ? "item" : "items"}
+        <button onClick={onClearChecked} className="mt-4 w-full py-3 rounded-xl bg-teal-700 text-white text-sm font-semibold">
+          Done shopping — check off {checkedCount} {checkedCount === 1 ? "item" : "items"} as bought
         </button>
       )}
       <p className="text-[11px] text-slate-400 text-center pt-3">
-        “Bought” records the price into that item's favorite (if saved) and clears it. Favorites remember your last &amp; cheapest price.
+        Tick items as you shop, then “Done shopping” records them to History and clears the list. Favorites also remember their last &amp; cheapest price.
       </p>
     </div>
+  );
+}
+
+function PurchaseHistory({ purchases, memberById, onDelete, onClearAll, onReadd, onClose }) {
+  const sorted = [...purchases].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const byDate = {};
+  for (const p of sorted) (byDate[p.date] ||= []).push(p);
+  const dates = Object.keys(byDate).sort((a, b) => (a < b ? 1 : -1));
+  const total = (list) => {
+    const sum = list.reduce((acc, p) => acc + (p.price === "" || p.price == null ? 0 : Number(p.price)), 0);
+    return sum > 0 ? money(sum) : "";
+  };
+  return (
+    <Sheet onClose={onClose} title="Purchase history">
+      {purchases.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">Nothing bought yet.<br />Items you check off as bought will show here.</p>
+      ) : (
+        <div className="space-y-4">
+          {dates.map((d) => (
+            <div key={d}>
+              <div className="flex items-center justify-between pb-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{d === todayKey() ? "Today" : fmtLong(d)}</p>
+                {total(byDate[d]) && <p className="text-[11px] font-semibold text-slate-500">{total(byDate[d])}</p>}
+              </div>
+              <ul className="space-y-1.5">
+                {byDate[d].map((p) => (
+                  <li key={p.id} className="flex items-center gap-2 rounded-xl bg-white border border-slate-200 p-3">
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-semibold text-slate-800 truncate">{p.name}</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {[p.store, money(p.price), p.by && memberById[p.by] ? memberById[p.by].name : null].filter(Boolean).join(" · ") || "no details"}
+                      </span>
+                    </span>
+                    <button onClick={() => onReadd(p)} className="shrink-0 px-2.5 py-1 rounded-lg bg-teal-50 text-teal-700 text-xs font-semibold">+ List</button>
+                    <button onClick={() => onDelete(p.id)} aria-label="Delete from history" className="shrink-0 text-slate-300 px-1 text-sm">✕</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          <button onClick={() => { if (confirm("Clear the entire purchase history? This can't be undone.")) onClearAll(); }}
+            className="w-full py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">
+            Clear all history
+          </button>
+        </div>
+      )}
+    </Sheet>
   );
 }
 
