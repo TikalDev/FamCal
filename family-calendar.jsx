@@ -6,7 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.9.0";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -1183,7 +1183,7 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
       {chores.length === 0 && (
         <div className="text-center py-14">
           <p className="text-4xl pb-2">🔄</p>
-          <p className="text-sm text-slate-400">No rotating chores yet.<br />Tap + to set one up — dishes, garbage, dog walking…</p>
+          <p className="text-sm text-slate-400">No chores yet.<br />Tap + to set one up — one person's job, or rotating between several.</p>
         </div>
       )}
       <ul className="space-y-2">
@@ -1192,6 +1192,7 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
           const turn = memberById[turnId];
           const done = choreDoneThisPeriod(c);
           const order = (c.memberIds || []).map((id) => memberById[id]).filter(Boolean);
+          const solo = order.length === 1;
           const nextId = whoseTurn(c, c.cadence === "daily" ? toKey(addDays(new Date(),1)) : toKey(addDays(new Date(),7)));
           const next = memberById[nextId];
           return (
@@ -1206,25 +1207,27 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
                   <span className="block text-sm font-bold text-slate-800">{c.title}</span>
                   {done ? (
                     <span className="block text-xs text-teal-700 font-semibold pt-0.5">
-                      Done this {c.cadence === "daily" ? "day" : "week"} ✓ — {next ? `${next.name}'s turn next` : ""}
+                      Done this {c.cadence === "daily" ? "day" : "week"} ✓{solo ? "" : next ? ` — ${next.name}'s turn next` : ""}
                     </span>
                   ) : (
                     <span className="block text-xs pt-0.5">
-                      <span className="font-bold" style={{ color: (turn||{}).color }}>{turn ? `${turn.name}'s turn` : "—"}</span>
+                      <span className="font-bold" style={{ color: (turn||{}).color }}>{turn ? (solo ? turn.name : `${turn.name}'s turn`) : "—"}</span>
                       <span className="text-slate-400"> · {cadenceLabel(c.cadence)}</span>
                     </span>
                   )}
-                  <span className="flex items-center gap-1 pt-1.5 flex-wrap">
-                    {order.map((m, i) => (
-                      <span key={m.id} className="flex items-center">
-                        <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${m.id === turnId && !done ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-500"}`}>
-                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.color }} />{m.name}
+                  {!solo && (
+                    <span className="flex items-center gap-1 pt-1.5 flex-wrap">
+                      {order.map((m, i) => (
+                        <span key={m.id} className="flex items-center">
+                          <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${m.id === turnId && !done ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-500"}`}>
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.color }} />{m.name}
+                          </span>
+                          {i < order.length - 1 && <span className="text-slate-300 px-0.5">→</span>}
                         </span>
-                        {i < order.length - 1 && <span className="text-slate-300 px-0.5">→</span>}
-                      </span>
-                    ))}
-                    <span className="text-slate-300 px-0.5">↻</span>
-                  </span>
+                      ))}
+                      <span className="text-slate-300 px-0.5">↻</span>
+                    </span>
+                  )}
                 </button>
               </div>
             </li>
@@ -1233,7 +1236,7 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
       </ul>
       {chores.length > 0 && (
         <p className="text-[11px] text-slate-400 text-center pt-4">
-          Turns rotate {chores[0] ? "" : ""}automatically each period. Checking off early still passes it to the next person.
+          Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat.
         </p>
       )}
     </div>
@@ -1249,16 +1252,17 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
     ...x,
     memberIds: x.memberIds.includes(id) ? x.memberIds.filter((y) => y !== id) : [...x.memberIds, id],
   }));
-  const ok = c.title.trim() && c.memberIds.length >= 2;
+  const ok = c.title.trim() && c.memberIds.length >= 1;
   const order = c.memberIds.map((id) => members.find((m) => m.id === id)).filter(Boolean);
+  const solo = order.length === 1;
   return (
-    <Sheet onClose={onClose} title={isNew ? "New rotating chore" : "Edit chore"}>
+    <Sheet onClose={onClose} title={isNew ? "New chore" : "Edit chore"}>
       <div className="space-y-3">
         <Field label="Chore">
           <input autoFocus value={c.title} onChange={(e) => set("title", e.target.value)} placeholder="Dishes, garbage, walk the dog…"
             className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
         </Field>
-        <Field label="How often does it change hands">
+        <Field label={solo ? "How often" : "How often does it change hands"}>
           <div className="grid grid-cols-2 gap-2">
             {[["weekly","Every week"],["daily","Every day"]].map(([v,label]) => (
               <button key={v} onClick={() => set("cadence", v)}
@@ -1268,7 +1272,7 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
             ))}
           </div>
         </Field>
-        <Field label="Rotation — tap people in the order they take turns">
+        <Field label="Who does it — tap one person, or several to rotate turns">
           <div className="flex flex-wrap gap-2">
             {members.map((m) => {
               const pos = c.memberIds.indexOf(m.id);
@@ -1282,7 +1286,8 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
               );
             })}
           </div>
-          {c.memberIds.length < 2 && <p className="text-[11px] text-red-500 pt-1">Pick at least two people to rotate between.</p>}
+          {c.memberIds.length < 1 && <p className="text-[11px] text-red-500 pt-1">Pick at least one person.</p>}
+          {solo && <p className="text-[11px] text-slate-400 pt-1">Just {order[0].name} — this stays their job, no rotation.</p>}
         </Field>
         {order.length >= 2 && (
           <div className="rounded-xl bg-slate-100 p-3">
@@ -1297,7 +1302,7 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
           {!isNew && <button onClick={() => onDelete(c.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
           <button disabled={!ok} onClick={() => onSave({ ...c, title: c.title.trim() })}
             className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
-            {isNew ? "Start rotation" : "Save changes"}
+            {isNew ? (solo ? "Add chore" : "Start rotation") : "Save changes"}
           </button>
         </div>
       </div>
