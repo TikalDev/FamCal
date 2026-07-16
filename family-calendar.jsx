@@ -6,7 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.7.0";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -20,6 +20,7 @@ const WEEKDAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const RECUR_LABELS = { none: "Doesn't repeat", weekly: "Every week", biweekly: "Every 2 weeks", monthly: "Every month", yearly: "Every year" };
+const CALENDAR_VIEWS = ["month", "week", "day", "board"];
 
 // ---------- date helpers ----------
 const toKey = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -156,6 +157,7 @@ export default function FamilyCalendar() {
   const [choreEditing, setChoreEditing] = useState(null);
   const [shopEditing, setShopEditing] = useState(null);
   const [favManage, setFavManage] = useState(false);
+  const [historyView, setHistoryView] = useState(false);
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -196,7 +198,7 @@ export default function FamilyCalendar() {
     setSyncing(true);
     try {
       const latest = (await loadData()) || dataRef.current;
-      const next = mutate(latest || { familyName: "Our Family", members: [], events: [], tasks: [], chores: [], shop: [], favorites: [] });
+      const next = mutate(latest || { familyName: "Our Family", members: [], events: [], tasks: [], chores: [], shop: [], favorites: [], purchases: [] });
       const stamped = await saveData(next);
       setData(stamped);
     } catch (e) { console.error("save failed", e); }
@@ -233,6 +235,7 @@ export default function FamilyCalendar() {
   const chores = data.chores || [];
   const shop = data.shop || [];         // active shopping list items
   const favorites = data.favorites || []; // saved favorites with price history
+  const purchases = data.purchases || []; // everything ever bought (newest first when shown)
 
   const newForMe = (me && lastSeen)
     ? [...allEvents, ...tasks].filter((it) => it.ts && it.ts > lastSeen && it.by && it.by !== me && peopleOf(it).includes(me))
@@ -345,35 +348,59 @@ export default function FamilyCalendar() {
     commit((d) => ({ ...d, shop: (d.shop || []).filter((s) => s.id !== id) }));
     setShopEditing(null);
   };
-  // "bought": record purchase into linked favorite's history, then clear the item
-  const buyShopItem = (id) => {
-    commit((d) => {
-      const item = (d.shop || []).find((s) => s.id === id);
-      if (!item) return d;
-      let favorites = [...(d.favorites || [])];
-      if (item.favId) {
-        favorites = favorites.map((f) => {
-          if (f.id !== item.favId) return f;
-          const history = [...(f.history || []), { store: item.store || "", price: item.price ?? "", date: todayKey() }];
-          return { ...f, history };
-        });
-      }
-      return { ...d, favorites, shop: (d.shop || []).filter((s) => s.id !== id) };
-    });
-  };
-  // clear all checked items at once, recording each into its favorite
+  // "Done shopping": record every checked item into purchase history +
+  // (if linked to a favorite) that favorite's price memory, then clear them.
   const clearCheckedShop = () => {
     commit((d) => {
-      let favorites = [...(d.favorites || [])];
       const checked = (d.shop || []).filter((s) => s.checked);
+      if (checked.length === 0) return d;
+      let favorites = [...(d.favorites || [])];
+      const newPurchases = checked.map((item) => ({
+        id: uid(),
+        name: item.name,
+        store: item.store || "",
+        price: (item.price === "" || item.price == null) ? "" : Number(item.price),
+        date: todayKey(),
+        by: me || null,
+        favId: item.favId || null,
+      }));
       for (const item of checked) {
         if (item.favId) {
           favorites = favorites.map((f) => f.id === item.favId
-            ? { ...f, history: [...(f.history || []), { store: item.store || "", price: item.price ?? "", date: todayKey() }] }
+            ? { ...f, history: [...(f.history || []), { store: item.store || "", price: (item.price === "" || item.price == null) ? "" : Number(item.price), date: todayKey() }] }
             : f);
         }
       }
-      return { ...d, favorites, shop: (d.shop || []).filter((s) => !s.checked) };
+      return {
+        ...d,
+        favorites,
+        purchases: [...(d.purchases || []), ...newPurchases],
+        shop: (d.shop || []).filter((s) => !s.checked),
+      };
+    });
+  };
+  const deletePurchase = (id) => {
+    commit((d) => ({ ...d, purchases: (d.purchases || []).filter((p) => p.id !== id) }));
+  };
+  const clearAllPurchases = () => {
+    commit((d) => ({ ...d, purchases: [] }));
+  };
+  // re-add a past purchase to the shopping list, carrying its last store/price as a hint
+  const readdFromHistory = (p) => {
+    commit((d) => {
+      // avoid duplicate: if an item with the same name is already on the list, leave it
+      if ((d.shop || []).some((s) => s.name.toLowerCase() === p.name.toLowerCase())) return d;
+      // find matching favorite (if any) so the star/price-memory links up
+      const fav = (d.favorites || []).find((f) => f.name.toLowerCase() === p.name.toLowerCase());
+      return {
+        ...d,
+        shop: [...(d.shop || []), {
+          id: uid(), name: p.name, store: "", price: "",
+          favId: fav ? fav.id : null,
+          lastStore: p.store || "", lastPrice: p.price ?? "",
+          checked: false, ts: Date.now(), by: me || null,
+        }],
+      };
     });
   };
 
@@ -410,6 +437,7 @@ export default function FamilyCalendar() {
     setFamEditing(false);
   };
 
+  const section = CALENDAR_VIEWS.includes(view) ? "calendar" : view;
   const headerTitle =
     view === "month" ? `${MONTHS[cursor.m]} ${cursor.y}`
     : view === "week" ? `${MONTHS[parseKey(weekAnchor).getMonth()]} ${parseKey(weekAnchor).getFullYear()}`
@@ -450,20 +478,38 @@ export default function FamilyCalendar() {
         </div>
       </header>
 
-      {/* view toggle */}
-      <div className="px-4 pb-3 overflow-x-auto">
+      {/* section toggle (top level) */}
+      <div className="px-4 pb-2 overflow-x-auto">
         <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold w-fit whitespace-nowrap">
-          {[["month","Month"],["week","Week"],["day","Day"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["board","Board"]].map(([v,label]) => (
-            <button key={v} onClick={() => setView(v)}
-              className={`px-3.5 py-1.5 rounded-full transition-colors ${view === v ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
-              {label}
-              {v === "tasks" && openTasks.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-teal-700 text-white text-[9px] align-middle">{openTasks.length}</span>
-              )}
-            </button>
-          ))}
+          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"]].map(([sec,label]) => {
+            const active = section === sec;
+            const go = () => setView(sec === "calendar" ? (CALENDAR_VIEWS.includes(view) ? view : "month") : sec);
+            return (
+              <button key={sec} onClick={go}
+                className={`px-3.5 py-1.5 rounded-full transition-colors ${active ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
+                {label}
+                {sec === "tasks" && openTasks.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-teal-700 text-white text-[9px] align-middle">{openTasks.length}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
+
+      {/* calendar sub-views (only when in Calendar section) */}
+      {section === "calendar" && (
+        <div className="px-4 pb-3 overflow-x-auto">
+          <div className="flex gap-1 text-xs font-semibold w-fit whitespace-nowrap">
+            {[["month","Month"],["week","Week"],["day","Day"],["board","Board"]].map(([v,label]) => (
+              <button key={v} onClick={() => setView(v)}
+                className={`px-3 py-1 rounded-lg transition-colors ${view === v ? "bg-teal-700 text-white" : "bg-slate-100 text-slate-500"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* member legend / me picker */}
       <div className="flex gap-2 px-4 pb-3 overflow-x-auto">
@@ -545,8 +591,9 @@ export default function FamilyCalendar() {
       )}
       {view === "shop" && (
         <ShoppingView shop={shop} favorites={favorites}
-          onToggle={toggleShopChecked} onBuy={buyShopItem} onEdit={setShopEditing} onClearChecked={clearCheckedShop}
-          onAddFav={addFavoriteToList} onSaveFav={saveItemAsFavorite} onManageFavs={() => setFavManage(true)} />
+          onToggle={toggleShopChecked} onEdit={setShopEditing} onClearChecked={clearCheckedShop}
+          onAddFav={addFavoriteToList} onSaveFav={saveItemAsFavorite} onManageFavs={() => setFavManage(true)}
+          onHistory={() => setHistoryView(true)} historyCount={purchases.length} />
       )}
       {view === "board" && (
         <Board members={data.members} allEvents={allEvents} onDetail={setDetail} onAdd={(mId) => openNew(tk, mId)} />
@@ -647,6 +694,11 @@ export default function FamilyCalendar() {
       {/* favorites manager */}
       {favManage && (
         <FavoritesManager favorites={favorites} onAdd={addFavorite} onRemove={removeFavorite} onAddToList={addFavoriteToList} onClose={() => setFavManage(false)} />
+      )}
+
+      {/* purchase history */}
+      {historyView && (
+        <PurchaseHistory purchases={purchases} memberById={memberById} onDelete={deletePurchase} onClearAll={clearAllPurchases} onReadd={readdFromHistory} onClose={() => setHistoryView(false)} />
       )}
     </Shell>
   );
@@ -1254,7 +1306,7 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
 }
 
 // ---------- shopping view ----------
-function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked, onAddFav, onSaveFav, onManageFavs }) {
+function ShoppingView({ shop, favorites, onToggle, onEdit, onClearChecked, onAddFav, onSaveFav, onManageFavs, onHistory, historyCount }) {
   const favById = Object.fromEntries(favorites.map((f) => [f.id, f]));
   const checkedCount = shop.filter((s) => s.checked).length;
   // favorites not already on the list, for quick-add chips
@@ -1267,7 +1319,10 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
       <div className="pb-3">
         <div className="flex items-center justify-between pb-1.5">
           <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Favorites — tap to add</p>
-          <button onClick={onManageFavs} className="text-xs font-semibold text-teal-700">Manage</button>
+          <div className="flex gap-3">
+            <button onClick={onHistory} className="text-xs font-semibold text-teal-700">History{historyCount ? ` (${historyCount})` : ""}</button>
+            <button onClick={onManageFavs} className="text-xs font-semibold text-teal-700">Favorites</button>
+          </div>
         </div>
         {favorites.length === 0 ? (
           <p className="text-xs text-slate-400">No favorites yet. Add an item, then tap ☆ to save it as a favorite for reuse.</p>
@@ -1303,7 +1358,7 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
             return (
               <li key={s.id} className="rounded-xl bg-white border border-slate-200">
                 <div className="flex items-center gap-3 p-3">
-                  <button onClick={() => onToggle(s.id)} aria-label={s.checked ? "Uncheck" : "Check"}
+                  <button onClick={() => onToggle(s.id)} aria-label={s.checked ? "Uncheck" : "Check off"}
                     className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${s.checked ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
                     {s.checked && <span className="text-xs font-bold">✓</span>}
                   </button>
@@ -1312,7 +1367,10 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
                       {s.name}
                     </span>
                     <span className="block text-[11px] text-slate-400 truncate">
-                      {[s.store, money(s.price)].filter(Boolean).join(" · ") || (hint ? hint : "tap to add store/price")}
+                      {[s.store, money(s.price)].filter(Boolean).join(" · ")
+                        || (hint ? hint
+                          : (s.lastStore || s.lastPrice !== "" ? `Last: ${money(s.lastPrice)}${s.lastStore ? ` ${s.lastStore}` : ""}`.trim()
+                            : "tap to add store/price"))}
                     </span>
                   </button>
                   {/* save-as-favorite star (only if not already a favorite) */}
@@ -1320,7 +1378,6 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
                     <button onClick={() => onSaveFav(s)} aria-label="Save as favorite" title="Save as favorite" className="text-slate-300 text-lg px-1">☆</button>
                   )}
                   {s.favId && <span className="text-amber-400 text-lg px-1" title="Saved favorite">★</span>}
-                  <button onClick={() => onBuy(s.id)} className="shrink-0 px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-bold">Bought</button>
                 </div>
               </li>
             );
@@ -1329,14 +1386,62 @@ function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked
       )}
 
       {checkedCount > 0 && (
-        <button onClick={onClearChecked} className="mt-4 w-full py-3 rounded-xl bg-slate-800 text-white text-sm font-semibold">
-          Done shopping — clear {checkedCount} checked {checkedCount === 1 ? "item" : "items"}
+        <button onClick={onClearChecked} className="mt-4 w-full py-3 rounded-xl bg-teal-700 text-white text-sm font-semibold">
+          Done shopping — check off {checkedCount} {checkedCount === 1 ? "item" : "items"} as bought
         </button>
       )}
       <p className="text-[11px] text-slate-400 text-center pt-3">
-        “Bought” records the price into that item's favorite (if saved) and clears it. Favorites remember your last & cheapest price.
+        Tick items as you shop, then “Done shopping” records them to History and clears the list. Favorites also remember their last &amp; cheapest price.
       </p>
     </div>
+  );
+}
+
+// ---------- purchase history ----------
+function PurchaseHistory({ purchases, memberById, onDelete, onClearAll, onReadd, onClose }) {
+  const sorted = [...purchases].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const byDate = {};
+  for (const p of sorted) (byDate[p.date] ||= []).push(p);
+  const dates = Object.keys(byDate).sort((a, b) => (a < b ? 1 : -1));
+  const total = (list) => {
+    const sum = list.reduce((acc, p) => acc + (p.price === "" || p.price == null ? 0 : Number(p.price)), 0);
+    return sum > 0 ? money(sum) : "";
+  };
+  return (
+    <Sheet onClose={onClose} title="Purchase history">
+      {purchases.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">Nothing bought yet.<br />Items you check off as bought will show here.</p>
+      ) : (
+        <div className="space-y-4">
+          {dates.map((d) => (
+            <div key={d}>
+              <div className="flex items-center justify-between pb-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{d === todayKey() ? "Today" : fmtLong(d)}</p>
+                {total(byDate[d]) && <p className="text-[11px] font-semibold text-slate-500">{total(byDate[d])}</p>}
+              </div>
+              <ul className="space-y-1.5">
+                {byDate[d].map((p) => (
+                  <li key={p.id} className="flex items-center gap-2 rounded-xl bg-white border border-slate-200 p-3">
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-semibold text-slate-800 truncate">{p.name}</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {[p.store, money(p.price), p.by && memberById[p.by] ? memberById[p.by].name : null].filter(Boolean).join(" · ") || "no details"}
+                      </span>
+                    </span>
+                    <button onClick={() => onReadd(p)} className="shrink-0 px-2.5 py-1 rounded-lg bg-teal-50 text-teal-700 text-xs font-semibold">+ List</button>
+                    <button onClick={() => onDelete(p.id)} aria-label="Delete from history" className="shrink-0 text-slate-300 px-1 text-sm">✕</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          <button onClick={() => { if (confirm("Clear the entire purchase history? This can't be undone.")) onClearAll(); }}
+            className="w-full py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">
+            Clear all history
+          </button>
+        </div>
+      )}
+    </Sheet>
   );
 }
 
@@ -1570,7 +1675,7 @@ function Setup({ onDone }) {
           <MemberEditorList members={members} setMembers={setMembers} />
         </div>
         <button disabled={!ok}
-          onClick={() => onDone({ familyName: familyName.trim() || "Our Family", members: clean, events: [], tasks: [], chores: [], shop: [], favorites: [] })}
+          onClick={() => onDone({ familyName: familyName.trim() || "Our Family", members: clean, events: [], tasks: [], chores: [], shop: [], favorites: [], purchases: [] })}
           className={`mt-8 w-full py-3.5 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
           Create our calendar
         </button>
