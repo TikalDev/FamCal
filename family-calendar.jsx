@@ -6,7 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
-const APP_VERSION = "2.0.1";
+const APP_VERSION = "2.1.0";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -236,7 +236,17 @@ export default function FamilyCalendar() {
   if (!data || !data.members?.length) return <Setup onDone={(fam) => commit(() => fam)} />;
 
   const memberById = Object.fromEntries(data.members.map((m) => [m.id, m]));
-  const colorOf = (ev) => (memberById[peopleOf(ev)[0]] || {}).color || "#94a3b8";
+  const colorsOf = (ev) => {
+    const cs = peopleOf(ev).map((id) => (memberById[id] || {}).color).filter(Boolean);
+    return cs.length ? cs : ["#94a3b8"];
+  };
+  const colorOf = (ev) => colorsOf(ev)[0];
+  const bgOf = (ev) => {
+    const cs = colorsOf(ev);
+    if (cs.length === 1) return cs[0];
+    const stops = cs.map((c, i) => `${c} ${Math.round((i / (cs.length - 1)) * 100)}%`).join(", ");
+    return `linear-gradient(135deg, ${stops})`;
+  };
   const allEvents = [...(data.events || []).filter((e) => !e.cleared), ...privEvents];
   const tk = todayKey();
 
@@ -622,7 +632,7 @@ export default function FamilyCalendar() {
             {todaysEvents.map((ev) => (
               <button key={ev.id + ev.date} onClick={() => setDetail(ev)}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 whitespace-nowrap shrink-0 active:bg-slate-50">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ background: colorOf(ev) }} />
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: bgOf(ev) }} />
                 <span className="text-xs font-semibold text-slate-800">{ev.title}</span>
                 {ev.time && <span className="text-[10px] text-slate-500">{fmtTime(ev.time)}</span>}
               </button>
@@ -640,17 +650,17 @@ export default function FamilyCalendar() {
       )}
 
       {view === "month" && (<>
-        <MonthGrid cursor={cursor} setCursor={setCursor} allEvents={allEvents} colorOf={colorOf} onPickDay={openDay} onDetail={setDetail} />
+        <MonthGrid cursor={cursor} setCursor={setCursor} allEvents={allEvents} colorOf={colorOf} bgOf={bgOf} onPickDay={openDay} onDetail={setDetail} />
         {taskSummary}
         {choreSummary}
       </>)}
       {view === "week" && (<>
-        <WeekView weekAnchor={weekAnchor} setWeekAnchor={setWeekAnchor} allEvents={allEvents} colorOf={colorOf} onPick={openDay} onDetail={setDetail} />
+        <WeekView weekAnchor={weekAnchor} setWeekAnchor={setWeekAnchor} allEvents={allEvents} colorOf={colorOf} bgOf={bgOf} onPick={openDay} onDetail={setDetail} />
         {taskSummary}
         {choreSummary}
       </>)}
       {view === "day" && (<>
-        <DayView dayAnchor={dayAnchor} setDayAnchor={setDayAnchor} allEvents={allEvents} memberById={memberById} colorOf={colorOf}
+        <DayView dayAnchor={dayAnchor} setDayAnchor={setDayAnchor} allEvents={allEvents} memberById={memberById} colorOf={colorOf} bgOf={bgOf}
           onDetail={setDetail} onAdd={() => openNew(dayAnchor)} />
         {taskSummary}
         {choreSummary}
@@ -701,13 +711,13 @@ export default function FamilyCalendar() {
 
       {/* day sheet */}
       {selectedDay && !editing && !detail && !taskEditing && !addChoosing && !famEditing && (
-        <DaySheet dayKey={selectedDay} allEvents={allEvents} memberById={memberById} colorOf={colorOf}
+        <DaySheet dayKey={selectedDay} allEvents={allEvents} memberById={memberById} colorOf={colorOf} bgOf={bgOf}
           onClose={() => setSelectedDay(null)} onDetail={setDetail} onAdd={() => openNew(selectedDay)} />
       )}
 
       {/* event detail */}
       {detail && !editing && (
-        <EventDetail ev={detail} memberById={memberById} colorOf={colorOf}
+        <EventDetail ev={detail} memberById={memberById} colorOf={colorOf} bgOf={bgOf}
           onClose={() => setDetail(null)} onEdit={() => setEditing(detail)} onDelete={() => deleteEvent(detail.id)}
           onToggleDone={(ev) => { toggleEventDone(ev); setDetail((d) => d ? { ...d, doneOn: (d.doneOn||[]).includes(ev.date) ? (d.doneOn||[]).filter((x)=>x!==ev.date) : [...(d.doneOn||[]), ev.date] } : d); }}
           onClearOccurrence={(ev) => { clearEventOccurrence(ev); setDetail(null); }} />
@@ -787,7 +797,7 @@ export default function FamilyCalendar() {
 }
 
 // ---------- day sheet ----------
-function DaySheet({ dayKey, allEvents, memberById, colorOf, onClose, onDetail, onAdd }) {
+function DaySheet({ dayKey, allEvents, memberById, colorOf, bgOf, onClose, onDetail, onAdd }) {
   const evs = eventsMapForRange(allEvents, dayKey, dayKey)[dayKey] || [];
   return (
     <Sheet onClose={onClose} title={fmtLong(dayKey)}>
@@ -796,7 +806,7 @@ function DaySheet({ dayKey, allEvents, memberById, colorOf, onClose, onDetail, o
         {evs.map((ev) => (
           <li key={ev.id + ev.date}>
             <button onClick={() => onDetail(ev)} className="w-full text-left flex gap-3 items-start p-3 rounded-xl bg-white border border-slate-200 active:bg-slate-50">
-              <span className="mt-1 w-3 h-3 rounded-full shrink-0" style={{ background: colorOf(ev) }} />
+              <span className="mt-1 w-3 h-3 rounded-full shrink-0" style={{ background: bgOf(ev) }} />
               <span className="flex-1 min-w-0">
                 <span className="block font-semibold text-slate-800">
                   {ev.title}{ev.recur !== "none" && <RepeatBadge />}{ev.visibility === "private" && <PrivateBadge />}
@@ -815,13 +825,13 @@ function DaySheet({ dayKey, allEvents, memberById, colorOf, onClose, onDetail, o
 }
 
 // ---------- event detail ----------
-function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete, onToggleDone, onClearOccurrence }) {
+function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete, onToggleDone, onClearOccurrence }) {
   const tel = digitsOf(ev.phone);
   const isDone = (ev.doneOn || []).includes(ev.date);
   return (
     <Sheet onClose={onClose} title="Event">
       {isDone && <p className="text-[11px] font-bold text-teal-700 pb-1">✓ Marked done</p>}
-      <div className="rounded-2xl bg-white border border-slate-200 p-4" style={{ borderLeft: `5px solid ${colorOf(ev)}` }}>
+      <div className="rounded-2xl bg-white border border-slate-200 p-4" style={(() => { const bg = bgOf(ev); const g = bg.startsWith("linear-gradient"); return g ? { borderLeft: "5px solid transparent", borderImage: `${bg} 1` } : { borderLeft: `5px solid ${bg}` }; })()}>
         <h3 className="text-lg font-bold text-slate-800">
           {ev.title}{ev.visibility === "private" && <PrivateBadge />}
         </h3>
@@ -882,7 +892,7 @@ function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete, onTog
 }
 
 // ---------- month grid ----------
-function MonthGrid({ cursor, setCursor, allEvents, colorOf, onPickDay, onDetail }) {
+function MonthGrid({ cursor, setCursor, allEvents, colorOf, bgOf, onPickDay, onDetail }) {
   const first = new Date(cursor.y, cursor.m, 1);
   const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
   const map = eventsMapForRange(allEvents, toKey(first), toKey(new Date(cursor.y, cursor.m, daysInMonth)));
@@ -926,7 +936,7 @@ function MonthGrid({ cursor, setCursor, allEvents, colorOf, onPickDay, onDetail 
                     <span key={ev.id + ev.date}
                       onClick={(e) => { e.stopPropagation(); onDetail(ev); }}
                       className={`block ${roundCls} ${marginCls} px-0.5 py-px text-[8.5px] leading-tight font-semibold text-white truncate`}
-                      style={{ background: colorOf(ev) }}>
+                      style={{ background: bgOf(ev) }}>
                       {showTitle ? ev.title : "\u00A0"}
                     </span>
                   );
@@ -943,7 +953,7 @@ function MonthGrid({ cursor, setCursor, allEvents, colorOf, onPickDay, onDetail 
 }
 
 // ---------- week view ----------
-function WeekView({ weekAnchor, setWeekAnchor, allEvents, colorOf, onPick, onDetail }) {
+function WeekView({ weekAnchor, setWeekAnchor, allEvents, colorOf, bgOf, onPick, onDetail }) {
   const start = parseKey(weekAnchor);
   const days = Array.from({ length: 7 }, (_, i) => toKey(addDays(start, i)));
   const map = eventsMapForRange(allEvents, days[0], days[6]);
@@ -979,7 +989,7 @@ function WeekView({ weekAnchor, setWeekAnchor, allEvents, colorOf, onPick, onDet
                     {evs.map((ev) => (
                       <li key={ev.id + ev.date}>
                         <button onClick={() => onDetail(ev)} className="w-full flex items-center gap-2 text-left rounded-lg px-2 py-1.5 active:bg-slate-100">
-                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: colorOf(ev) }} />
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: bgOf(ev) }} />
                           <span className="flex-1 text-sm font-medium text-slate-800 truncate">
                             {ev.title}{ev.recur !== "none" && <RepeatBadge />}{ev.visibility === "private" && <PrivateBadge />}
                           </span>
@@ -999,7 +1009,7 @@ function WeekView({ weekAnchor, setWeekAnchor, allEvents, colorOf, onPick, onDet
 }
 
 // ---------- day view ----------
-function DayView({ dayAnchor, setDayAnchor, allEvents, memberById, colorOf, onDetail, onAdd }) {
+function DayView({ dayAnchor, setDayAnchor, allEvents, memberById, colorOf, bgOf, onDetail, onAdd }) {
   const tk = todayKey();
   const d = parseKey(dayAnchor);
   const evs = eventsMapForRange(allEvents, dayAnchor, dayAnchor)[dayAnchor] || [];
@@ -1024,7 +1034,7 @@ function DayView({ dayAnchor, setDayAnchor, allEvents, memberById, colorOf, onDe
         <div className="pb-3">
           <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 pb-1.5">All day</p>
           <div className="space-y-1.5">
-            {allDay.map((ev) => <DayCard key={ev.id + ev.date} ev={ev} memberById={memberById} colorOf={colorOf} onDetail={onDetail} />)}
+            {allDay.map((ev) => <DayCard key={ev.id + ev.date} ev={ev} memberById={memberById} colorOf={colorOf} bgOf={bgOf} onDetail={onDetail} />)}
           </div>
         </div>
       )}
@@ -1035,7 +1045,7 @@ function DayView({ dayAnchor, setDayAnchor, allEvents, memberById, colorOf, onDe
           {timed.map((ev) => (
             <div key={ev.id + ev.date} className="flex gap-3 items-start">
               <span className="w-16 shrink-0 text-right text-xs font-bold text-slate-500 pt-3">{fmtTime(ev.time)}</span>
-              <div className="flex-1"><DayCard ev={ev} memberById={memberById} colorOf={colorOf} onDetail={onDetail} /></div>
+              <div className="flex-1"><DayCard ev={ev} memberById={memberById} colorOf={colorOf} bgOf={bgOf} onDetail={onDetail} /></div>
             </div>
           ))}
         </div>
@@ -1046,10 +1056,12 @@ function DayView({ dayAnchor, setDayAnchor, allEvents, memberById, colorOf, onDe
   );
 }
 
-function DayCard({ ev, memberById, colorOf, onDetail }) {
+function DayCard({ ev, memberById, colorOf, bgOf, onDetail }) {
+  const bg = bgOf(ev);
+  const isGrad = bg.startsWith("linear-gradient");
   return (
     <button onClick={() => onDetail(ev)} className="w-full text-left rounded-xl bg-white border border-slate-200 p-3 active:bg-slate-50"
-      style={{ borderLeft: `4px solid ${colorOf(ev)}` }}>
+      style={{ borderLeft: `4px solid ${isGrad ? "transparent" : bg}`, ...(isGrad ? { borderImage: `${bg} 1` } : {}) }}>
       <span className="block text-sm font-semibold text-slate-800">
         {ev.title}{ev.recur !== "none" && <RepeatBadge />}{ev.visibility === "private" && <PrivateBadge />}
       </span>
