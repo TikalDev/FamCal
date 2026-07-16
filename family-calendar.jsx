@@ -6,6 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
+const APP_VERSION = "1.4.0";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -94,6 +95,27 @@ const whoseTurn = (chore, dateK = todayKey()) => {
 const choreDoneThisPeriod = (chore) => chore.lastDone && chore.lastDone.period === periodOf(chore);
 const cadenceLabel = (c) => (c === "daily" ? "Every day" : "Every week");
 
+// ---------- shopping / favorites ----------
+const money = (n) => (n == null || n === "" ? "" : `$${Number(n).toFixed(2)}`);
+// most recent purchase from a favorite's history
+const lastBuy = (fav) => (fav.history && fav.history.length ? fav.history[fav.history.length - 1] : null);
+// cheapest recorded purchase (by price) from a favorite's history
+const cheapestBuy = (fav) => {
+  const withPrice = (fav.history || []).filter((h) => h.price != null && h.price !== "");
+  if (!withPrice.length) return null;
+  return withPrice.reduce((best, h) => (Number(h.price) < Number(best.price) ? h : best));
+};
+const priceHint = (fav) => {
+  if (!fav) return "";
+  const last = lastBuy(fav), cheap = cheapestBuy(fav);
+  const bits = [];
+  if (last) bits.push(`Last: ${money(last.price)}${last.store ? ` ${last.store}` : ""}`.trim());
+  if (cheap && (!last || cheap.store !== last.store || cheap.price !== last.price)) {
+    bits.push(`Cheapest: ${money(cheap.price)}${cheap.store ? ` ${cheap.store}` : ""}`.trim());
+  }
+  return bits.join(" · ");
+};
+
 // ---------- storage ----------
 async function loadData() {
   try {
@@ -132,6 +154,8 @@ export default function FamilyCalendar() {
   const [editing, setEditing] = useState(null);
   const [taskEditing, setTaskEditing] = useState(null);
   const [choreEditing, setChoreEditing] = useState(null);
+  const [shopEditing, setShopEditing] = useState(null);
+  const [favManage, setFavManage] = useState(false);
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -172,7 +196,7 @@ export default function FamilyCalendar() {
     setSyncing(true);
     try {
       const latest = (await loadData()) || dataRef.current;
-      const next = mutate(latest || { familyName: "Our Family", members: [], events: [], tasks: [], chores: [] });
+      const next = mutate(latest || { familyName: "Our Family", members: [], events: [], tasks: [], chores: [], shop: [], favorites: [] });
       const stamped = await saveData(next);
       setData(stamped);
     } catch (e) { console.error("save failed", e); }
@@ -207,6 +231,8 @@ export default function FamilyCalendar() {
   const openTasks = tasks.filter((t) => !t.done).sort((a,b) => ((a.dueDate||"9999") < (b.dueDate||"9999") ? -1 : 1));
   const doneTasks = tasks.filter((t) => t.done);
   const chores = data.chores || [];
+  const shop = data.shop || [];         // active shopping list items
+  const favorites = data.favorites || []; // saved favorites with price history
 
   const newForMe = (me && lastSeen)
     ? [...allEvents, ...tasks].filter((it) => it.ts && it.ts > lastSeen && it.by && it.by !== me && peopleOf(it).includes(me))
@@ -298,6 +324,87 @@ export default function FamilyCalendar() {
     }));
   };
 
+  // ----- shopping list -----
+  const addShopItem = (item) => {
+    // item: { name, store, price, favId? }  -> add to active list
+    commit((d) => {
+      const list = [...(d.shop || [])];
+      list.push({ id: uid(), name: item.name.trim(), store: item.store || "", price: item.price ?? "", favId: item.favId || null, checked: false, ts: Date.now(), by: me || null });
+      return { ...d, shop: list };
+    });
+    setShopEditing(null);
+  };
+  const editShopItem = (item) => {
+    commit((d) => ({ ...d, shop: (d.shop || []).map((s) => (s.id === item.id ? { ...s, ...item } : s)) }));
+    setShopEditing(null);
+  };
+  const toggleShopChecked = (id) => {
+    commit((d) => ({ ...d, shop: (d.shop || []).map((s) => (s.id === id ? { ...s, checked: !s.checked } : s)) }));
+  };
+  const removeShopItem = (id) => {
+    commit((d) => ({ ...d, shop: (d.shop || []).filter((s) => s.id !== id) }));
+    setShopEditing(null);
+  };
+  // "bought": record purchase into linked favorite's history, then clear the item
+  const buyShopItem = (id) => {
+    commit((d) => {
+      const item = (d.shop || []).find((s) => s.id === id);
+      if (!item) return d;
+      let favorites = [...(d.favorites || [])];
+      if (item.favId) {
+        favorites = favorites.map((f) => {
+          if (f.id !== item.favId) return f;
+          const history = [...(f.history || []), { store: item.store || "", price: item.price ?? "", date: todayKey() }];
+          return { ...f, history };
+        });
+      }
+      return { ...d, favorites, shop: (d.shop || []).filter((s) => s.id !== id) };
+    });
+  };
+  // clear all checked items at once, recording each into its favorite
+  const clearCheckedShop = () => {
+    commit((d) => {
+      let favorites = [...(d.favorites || [])];
+      const checked = (d.shop || []).filter((s) => s.checked);
+      for (const item of checked) {
+        if (item.favId) {
+          favorites = favorites.map((f) => f.id === item.favId
+            ? { ...f, history: [...(f.history || []), { store: item.store || "", price: item.price ?? "", date: todayKey() }] }
+            : f);
+        }
+      }
+      return { ...d, favorites, shop: (d.shop || []).filter((s) => !s.checked) };
+    });
+  };
+
+  // ----- favorites -----
+  const addFavorite = (name) => {
+    commit((d) => {
+      if ((d.favorites || []).some((f) => f.name.toLowerCase() === name.trim().toLowerCase())) return d;
+      return { ...d, favorites: [...(d.favorites || []), { id: uid(), name: name.trim(), history: [] }] };
+    });
+  };
+  const saveItemAsFavorite = (item) => {
+    // create a favorite from an active item (and link the item to it)
+    commit((d) => {
+      const favorites = [...(d.favorites || [])];
+      let fav = favorites.find((f) => f.name.toLowerCase() === item.name.trim().toLowerCase());
+      if (!fav) { fav = { id: uid(), name: item.name.trim(), history: [] }; favorites.push(fav); }
+      const shop = (d.shop || []).map((s) => (s.id === item.id ? { ...s, favId: fav.id } : s));
+      return { ...d, favorites, shop };
+    });
+  };
+  const removeFavorite = (id) => {
+    commit((d) => ({ ...d, favorites: (d.favorites || []).filter((f) => f.id !== id) }));
+  };
+  const addFavoriteToList = (fav) => {
+    const last = lastBuy(fav);
+    commit((d) => {
+      if ((d.shop || []).some((s) => s.favId === fav.id)) return d; // already on list
+      return { ...d, shop: [...(d.shop || []), { id: uid(), name: fav.name, store: last?.store || "", price: "", favId: fav.id, checked: false, ts: Date.now(), by: me || null }] };
+    });
+  };
+
   const saveFamily = (f) => {
     commit((d) => ({ ...d, familyName: f.familyName, members: f.members, adminPin: f.adminPin ?? d.adminPin ?? null }));
     setFamEditing(false);
@@ -309,6 +416,7 @@ export default function FamilyCalendar() {
     : view === "day" ? `${MONTHS[parseKey(dayAnchor).getMonth()]} ${parseKey(dayAnchor).getFullYear()}`
     : view === "tasks" ? "To-do list"
     : view === "chores" ? "Chore rotation"
+    : view === "shop" ? "Shopping list"
     : "Family board";
 
   const openNew = (dayKey, memberId) => {
@@ -345,7 +453,7 @@ export default function FamilyCalendar() {
       {/* view toggle */}
       <div className="px-4 pb-3 overflow-x-auto">
         <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold w-fit whitespace-nowrap">
-          {[["month","Month"],["week","Week"],["day","Day"],["tasks","Tasks"],["chores","Chores"],["board","Board"]].map(([v,label]) => (
+          {[["month","Month"],["week","Week"],["day","Day"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["board","Board"]].map(([v,label]) => (
             <button key={v} onClick={() => setView(v)}
               className={`px-3.5 py-1.5 rounded-full transition-colors ${view === v ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
               {label}
@@ -435,12 +543,17 @@ export default function FamilyCalendar() {
       {view === "chores" && (
         <ChoresView chores={chores} memberById={memberById} onComplete={completeChore} onEdit={setChoreEditing} />
       )}
+      {view === "shop" && (
+        <ShoppingView shop={shop} favorites={favorites}
+          onToggle={toggleShopChecked} onBuy={buyShopItem} onEdit={setShopEditing} onClearChecked={clearCheckedShop}
+          onAddFav={addFavoriteToList} onSaveFav={saveItemAsFavorite} onManageFavs={() => setFavManage(true)} />
+      )}
       {view === "board" && (
         <Board members={data.members} allEvents={allEvents} onDetail={setDetail} onAdd={(mId) => openNew(tk, mId)} />
       )}
 
       {/* floating add */}
-      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : setAddChoosing(true))}
+      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : view === "shop" ? setShopEditing("new") : setAddChoosing(true))}
         className="fixed bottom-5 right-5 w-14 h-14 rounded-full bg-teal-700 text-white text-3xl leading-none shadow-lg active:scale-95 transition-transform"
         aria-label="Add">+</button>
 
@@ -518,6 +631,22 @@ export default function FamilyCalendar() {
       {/* family settings */}
       {famEditing && (
         <FamilyEditor familyName={data.familyName} members={data.members} adminPin={data.adminPin || null} onSave={saveFamily} onClose={() => setFamEditing(false)} />
+      )}
+
+      {/* shopping item editor */}
+      {shopEditing && (
+        <ShopItemEditor
+          key={shopEditing === "new" ? "new" : shopEditing.id}
+          initial={shopEditing === "new" ? { id: uid(), name: "", store: "", price: "", favId: null } : shopEditing}
+          isNew={shopEditing === "new"}
+          favorites={favorites}
+          onAdd={addShopItem} onSave={editShopItem} onRemove={removeShopItem} onClose={() => setShopEditing(null)}
+        />
+      )}
+
+      {/* favorites manager */}
+      {favManage && (
+        <FavoritesManager favorites={favorites} onAdd={addFavorite} onRemove={removeFavorite} onAddToList={addFavoriteToList} onClose={() => setFavManage(false)} />
       )}
     </Shell>
   );
@@ -1124,6 +1253,181 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
   );
 }
 
+// ---------- shopping view ----------
+function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked, onAddFav, onSaveFav, onManageFavs }) {
+  const favById = Object.fromEntries(favorites.map((f) => [f.id, f]));
+  const checkedCount = shop.filter((s) => s.checked).length;
+  // favorites not already on the list, for quick-add chips
+  const onListFavIds = new Set(shop.map((s) => s.favId).filter(Boolean));
+  const quickFavs = favorites.filter((f) => !onListFavIds.has(f.id));
+
+  return (
+    <div className="px-4 pb-28">
+      {/* quick-add favorites */}
+      <div className="pb-3">
+        <div className="flex items-center justify-between pb-1.5">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Favorites — tap to add</p>
+          <button onClick={onManageFavs} className="text-xs font-semibold text-teal-700">Manage</button>
+        </div>
+        {favorites.length === 0 ? (
+          <p className="text-xs text-slate-400">No favorites yet. Add an item, then tap ☆ to save it as a favorite for reuse.</p>
+        ) : quickFavs.length === 0 ? (
+          <p className="text-xs text-slate-400">All your favorites are already on the list.</p>
+        ) : (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {quickFavs.map((f) => {
+              const hint = priceHint(f);
+              return (
+                <button key={f.id} onClick={() => onAddFav(f)}
+                  className="flex flex-col items-start px-3 py-2 rounded-xl bg-white border border-slate-200 whitespace-nowrap shrink-0 active:bg-slate-50">
+                  <span className="text-xs font-semibold text-slate-800">+ {f.name}</span>
+                  {hint && <span className="text-[10px] text-slate-400">{hint}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* active list */}
+      {shop.length === 0 ? (
+        <div className="text-center py-12">
+          <p className="text-4xl pb-2">🛒</p>
+          <p className="text-sm text-slate-400">List is empty. Tap + to add something,<br />or tap a favorite above.</p>
+        </div>
+      ) : (
+        <ul className="space-y-1.5">
+          {shop.map((s) => {
+            const fav = s.favId ? favById[s.favId] : null;
+            const hint = fav ? priceHint(fav) : "";
+            return (
+              <li key={s.id} className="rounded-xl bg-white border border-slate-200">
+                <div className="flex items-center gap-3 p-3">
+                  <button onClick={() => onToggle(s.id)} aria-label={s.checked ? "Uncheck" : "Check"}
+                    className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${s.checked ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
+                    {s.checked && <span className="text-xs font-bold">✓</span>}
+                  </button>
+                  <button onClick={() => onEdit(s)} className="flex-1 min-w-0 text-left">
+                    <span className={`block text-sm font-semibold truncate ${s.checked ? "line-through text-slate-400" : "text-slate-800"}`}>
+                      {s.name}
+                    </span>
+                    <span className="block text-[11px] text-slate-400 truncate">
+                      {[s.store, money(s.price)].filter(Boolean).join(" · ") || (hint ? hint : "tap to add store/price")}
+                    </span>
+                  </button>
+                  {/* save-as-favorite star (only if not already a favorite) */}
+                  {!s.favId && (
+                    <button onClick={() => onSaveFav(s)} aria-label="Save as favorite" title="Save as favorite" className="text-slate-300 text-lg px-1">☆</button>
+                  )}
+                  {s.favId && <span className="text-amber-400 text-lg px-1" title="Saved favorite">★</span>}
+                  <button onClick={() => onBuy(s.id)} className="shrink-0 px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-bold">Bought</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {checkedCount > 0 && (
+        <button onClick={onClearChecked} className="mt-4 w-full py-3 rounded-xl bg-slate-800 text-white text-sm font-semibold">
+          Done shopping — clear {checkedCount} checked {checkedCount === 1 ? "item" : "items"}
+        </button>
+      )}
+      <p className="text-[11px] text-slate-400 text-center pt-3">
+        “Bought” records the price into that item's favorite (if saved) and clears it. Favorites remember your last & cheapest price.
+      </p>
+    </div>
+  );
+}
+
+// ---------- shop item editor ----------
+function ShopItemEditor({ initial, isNew, favorites, onAdd, onSave, onRemove, onClose }) {
+  const [s, setS] = useState(initial);
+  const set = (k,v) => setS((x) => ({ ...x, [k]: v }));
+  // if typing a name that matches a favorite, surface its price hint + auto-link
+  const match = favorites.find((f) => f.name.toLowerCase() === (s.name || "").trim().toLowerCase());
+  const hint = match ? priceHint(match) : "";
+  const ok = (s.name || "").trim();
+  const submit = () => {
+    const payload = { ...s, name: s.name.trim(), price: s.price === "" ? "" : Number(s.price), favId: s.favId || (match ? match.id : null) };
+    isNew ? onAdd(payload) : onSave(payload);
+  };
+  return (
+    <Sheet onClose={onClose} title={isNew ? "Add to list" : "Edit item"}>
+      <div className="space-y-3">
+        <Field label="Item">
+          <input autoFocus value={s.name} onChange={(e) => set("name", e.target.value)} placeholder="Milk, bread, dog food…"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+          {hint && <p className="text-[11px] text-teal-700 font-semibold pt-1">💡 {hint}</p>}
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Store (optional)">
+            <input value={s.store || ""} onChange={(e) => set("store", e.target.value)} placeholder="Walmart, Costco…"
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+          </Field>
+          <Field label="Price (optional)">
+            <input type="number" inputMode="decimal" step="0.01" value={s.price === "" || s.price == null ? "" : s.price}
+              onChange={(e) => set("price", e.target.value)} placeholder="3.00"
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+          </Field>
+        </div>
+        {match && !s.favId && <p className="text-[11px] text-slate-400">This matches your favorite “{match.name}” — buying it will update that favorite's price history.</p>}
+        <div className="flex gap-2 pt-1">
+          {!isNew && <button onClick={() => onRemove(s.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Remove</button>}
+          <button disabled={!ok} onClick={submit}
+            className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
+            {isNew ? "Add to list" : "Save"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+// ---------- favorites manager ----------
+function FavoritesManager({ favorites, onAdd, onRemove, onAddToList, onClose }) {
+  const [newName, setNewName] = useState("");
+  return (
+    <Sheet onClose={onClose} title="Favorites">
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Add a favorite (e.g. Milk)"
+            onKeyDown={(e) => { if (e.key === "Enter" && newName.trim()) { onAdd(newName); setNewName(""); } }}
+            className="flex-1 px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+          <button disabled={!newName.trim()} onClick={() => { onAdd(newName); setNewName(""); }}
+            className={`px-4 rounded-xl text-sm font-semibold text-white ${newName.trim() ? "bg-teal-700" : "bg-slate-300"}`}>Add</button>
+        </div>
+        {favorites.length === 0 ? (
+          <p className="text-xs text-slate-400 text-center py-6">No favorites yet.<br />Add regulars here, or tap ☆ on any list item.</p>
+        ) : (
+          <ul className="space-y-2">
+            {favorites.map((f) => {
+              const last = lastBuy(f), cheap = cheapestBuy(f);
+              return (
+                <li key={f.id} className="rounded-xl bg-white border border-slate-200 p-3">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 font-semibold text-sm text-slate-800">{f.name}</span>
+                    <button onClick={() => onAddToList(f)} className="px-2.5 py-1 rounded-lg bg-teal-50 text-teal-700 text-xs font-semibold">+ List</button>
+                    <button onClick={() => onRemove(f.id)} className="text-slate-400 px-1">✕</button>
+                  </div>
+                  {(last || cheap) && (
+                    <div className="pt-1.5 text-[11px] text-slate-500 space-y-0.5">
+                      {last && <p>Last: {money(last.price)}{last.store ? ` at ${last.store}` : ""} · {fmtShort(last.date)}</p>}
+                      {cheap && (!last || cheap.store !== last.store || cheap.price !== last.price) &&
+                        <p className="text-teal-700 font-semibold">Cheapest: {money(cheap.price)}{cheap.store ? ` at ${cheap.store}` : ""}</p>}
+                      <p className="text-slate-400">{(f.history || []).length} purchase{(f.history || []).length === 1 ? "" : "s"} recorded</p>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
 // ---------- event editor ----------
 function EventEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
   const [ev, setEv] = useState(initial);
@@ -1266,7 +1570,7 @@ function Setup({ onDone }) {
           <MemberEditorList members={members} setMembers={setMembers} />
         </div>
         <button disabled={!ok}
-          onClick={() => onDone({ familyName: familyName.trim() || "Our Family", members: clean, events: [], tasks: [], chores: [] })}
+          onClick={() => onDone({ familyName: familyName.trim() || "Our Family", members: clean, events: [], tasks: [], chores: [], shop: [], favorites: [] })}
           className={`mt-8 w-full py-3.5 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
           Create our calendar
         </button>
@@ -1326,6 +1630,7 @@ function FamilyEditor({ familyName, members: initMembers, adminPin: initPin, onS
             </button>
           </>
         )}
+        <p className="text-center text-[10px] text-slate-300 pt-2">Family Calendar · v{APP_VERSION}</p>
       </div>
     </Sheet>
   );
