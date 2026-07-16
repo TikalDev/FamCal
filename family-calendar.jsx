@@ -6,7 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.0.1";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -1271,15 +1271,19 @@ function TaskRow({ t, memberById, onToggle, onEdit, onClear, compact }) {
       <button onClick={() => onEdit(t)} className="flex-1 min-w-0 text-left">
         <span className={`block text-sm font-semibold truncate ${t.done ? "line-through text-slate-400" : "text-slate-800"}`}>{t.title}</span>
         <span className={`block text-[11px] ${overdue ? "text-red-500 font-semibold" : "text-slate-400"}`}>
-          {t.done && onClear ? "Done — swipe right to clear" : dueLabel(t.dueDate)}
+          {t.done && onClear ? "Done ✓" : dueLabel(t.dueDate)}
           {!t.done && peopleOf(t).length > 0 && <> · {peopleOf(t).map((id) => (memberById[id]||{}).name).filter(Boolean).join(", ")}</>}
         </span>
       </button>
-      <span className="flex -space-x-1 shrink-0">
-        {peopleOf(t).slice(0,3).map((id) => memberById[id] && (
-          <span key={id} className="w-4 h-4 rounded-full ring-2 ring-white" style={{ background: memberById[id].color }} title={memberById[id].name} />
-        ))}
-      </span>
+      {t.done && onClear ? (
+        <button onClick={() => onClear(t.id)} className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold">Clear</button>
+      ) : (
+        <span className="flex -space-x-1 shrink-0">
+          {peopleOf(t).slice(0,3).map((id) => memberById[id] && (
+            <span key={id} className="w-4 h-4 rounded-full ring-2 ring-white" style={{ background: memberById[id].color }} title={memberById[id].name} />
+          ))}
+        </span>
+      )}
     </div>
   );
   if (onClear) return <SwipeRow enabled={t.done} onSwipe={() => onClear(t.id)}>{inner}</SwipeRow>;
@@ -1370,7 +1374,7 @@ function ChoresView({ chores, memberById, onComplete, onClear, onEdit, onHistory
                   <span className="block text-sm font-bold text-slate-800">{c.title}</span>
                   {done ? (
                     <span className="block text-xs text-teal-700 font-semibold pt-0.5">
-                      Done this {c.cadence === "daily" ? "day" : "week"} ✓ — swipe right to clear{solo ? "" : next ? ` · ${next.name} next` : ""}
+                      Done this {c.cadence === "daily" ? "day" : "week"} ✓{solo ? "" : next ? ` · ${next.name} next` : ""}
                     </span>
                   ) : (
                     <span className="block text-xs pt-0.5">
@@ -1392,6 +1396,12 @@ function ChoresView({ chores, memberById, onComplete, onClear, onEdit, onHistory
                     </span>
                   )}
                 </button>
+                {done && (
+                  <button onClick={() => onClear(c.id)}
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold self-center">
+                    Clear
+                  </button>
+                )}
               </div>
             </li>
           );
@@ -1404,7 +1414,7 @@ function ChoresView({ chores, memberById, onComplete, onClear, onEdit, onHistory
       </ul>
       {chores.length > 0 && (
         <p className="text-[11px] text-slate-400 text-center pt-4">
-          Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat. Swipe a done chore right to clear it (it returns next time).
+          Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat. Once done, tap Clear (or swipe right) to tuck it away — it returns next time.
         </p>
       )}
     </div>
