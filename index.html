@@ -42,6 +42,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
+const APP_VERSION = "1.4.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -127,6 +128,25 @@ const whoseTurn = (chore, dateK = todayKey()) => {
 const choreDoneThisPeriod = (chore) => chore.lastDone && chore.lastDone.period === periodOf(chore);
 const cadenceLabel = (c) => (c === "daily" ? "Every day" : "Every week");
 
+// ---------- shopping / favorites ----------
+const money = (n) => (n == null || n === "" ? "" : `$${Number(n).toFixed(2)}`);
+const lastBuy = (fav) => (fav.history && fav.history.length ? fav.history[fav.history.length - 1] : null);
+const cheapestBuy = (fav) => {
+  const withPrice = (fav.history || []).filter((h) => h.price != null && h.price !== "");
+  if (!withPrice.length) return null;
+  return withPrice.reduce((best, h) => (Number(h.price) < Number(best.price) ? h : best));
+};
+const priceHint = (fav) => {
+  if (!fav) return "";
+  const last = lastBuy(fav), cheap = cheapestBuy(fav);
+  const bits = [];
+  if (last) bits.push(`Last: ${money(last.price)}${last.store ? ` ${last.store}` : ""}`.trim());
+  if (cheap && (!last || cheap.store !== last.store || cheap.price !== last.price)) {
+    bits.push(`Cheapest: ${money(cheap.price)}${cheap.store ? ` ${cheap.store}` : ""}`.trim());
+  }
+  return bits.join(" · ");
+};
+
 // ---------- localStorage (per-device personal data) ----------
 const lsGet = (k, fallback) => { try { const v = localStorage.getItem(k); return v === null ? fallback : JSON.parse(v); } catch { return fallback; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -138,6 +158,10 @@ const rowToTask = (r) => ({ id: r.id, title: r.title, dueDate: r.due_date || "",
 const taskToRow = (t) => ({ id: t.id, title: t.title, due_date: t.dueDate || null, notes: t.notes || null, done: !!t.done, member_ids: t.memberIds, ts: t.ts, by_member: t.by || null });
 const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "weekly", memberIds: r.member_ids || [], anchorPeriod: r.anchor_period || 0, anchorIndex: r.anchor_index || 0, lastDone: r.last_done || null, ts: r.ts, by: r.by_member });
 const choreToRow = (c) => ({ id: c.id, title: c.title, cadence: c.cadence, member_ids: c.memberIds, anchor_period: c.anchorPeriod || 0, anchor_index: c.anchorIndex || 0, last_done: c.lastDone || null, ts: c.ts, by_member: c.by || null });
+const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, favId: r.fav_id || null, checked: !!r.checked, ts: r.ts, by: r.by_member });
+const shopToRow = (s) => ({ id: s.id, name: s.name, store: s.store || null, price: (s.price === "" || s.price == null) ? null : Number(s.price), fav_id: s.favId || null, checked: !!s.checked, ts: s.ts, by_member: s.by || null });
+const rowToFav = (r) => ({ id: r.id, name: r.name, history: r.history || [] });
+const favToRow = (f) => ({ id: f.id, name: f.name, history: f.history || [] });
 
 // ============================================================
 // APP
@@ -149,6 +173,8 @@ function App() {
   const [events, setEvents] = useState([]);         // shared events
   const [tasks, setTasks] = useState([]);
   const [chores, setChores] = useState([]);
+  const [shop, setShop] = useState([]);
+  const [favorites, setFavorites] = useState([]);
   const [privEvents, setPrivEvents] = useState(() => lsGet("famcal:private", []));
   const [me, setMe] = useState(() => lsGet("famcal:me", null));
   const [lastSeen, setLastSeen] = useState(() => lsGet("famcal:seen", null));
@@ -162,6 +188,8 @@ function App() {
   const [editing, setEditing] = useState(null);
   const [taskEditing, setTaskEditing] = useState(null);
   const [choreEditing, setChoreEditing] = useState(null);
+  const [shopEditing, setShopEditing] = useState(null);
+  const [favManage, setFavManage] = useState(false);
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -170,17 +198,21 @@ function App() {
   // ---- fetch everything ----
   const fetchAll = useCallback(async () => {
     try {
-      const [f, e, t, c] = await Promise.all([
+      const [f, e, t, c, sh, fv] = await Promise.all([
         sb.from("family").select("*").eq("id", 1).maybeSingle(),
         sb.from("events").select("*"),
         sb.from("tasks").select("*"),
         sb.from("chores").select("*"),
+        sb.from("shop").select("*"),
+        sb.from("favorites").select("*"),
       ]);
-      if (f.error || e.error || t.error || c.error) throw (f.error || e.error || t.error || c.error);
+      if (f.error || e.error || t.error || c.error || sh.error || fv.error) throw (f.error || e.error || t.error || c.error || sh.error || fv.error);
       setFam(f.data ? { name: f.data.name, members: f.data.members || [], passcode: f.data.passcode || null, adminPin: f.data.admin_pin || null } : null);
       setEvents((e.data || []).map(rowToEvent));
       setTasks((t.data || []).map(rowToTask));
       setChores((c.data || []).map(rowToChore));
+      setShop((sh.data || []).map(rowToShop));
+      setFavorites((fv.data || []).map(rowToFav));
       setOffline(false);
     } catch (err) {
       console.error("fetch failed", err);
@@ -301,6 +333,78 @@ function App() {
     fetchAll();
   };
 
+  // ----- shopping -----
+  const addShopItem = async (item) => {
+    setSyncing(true);
+    const row = shopToRow({ id: uid(), name: item.name.trim(), store: item.store, price: item.price, favId: item.favId || null, checked: false, ts: Date.now(), by: me || null });
+    await sb.from("shop").insert(row);
+    await fetchAll(); setSyncing(false); setShopEditing(null);
+  };
+  const editShopItem = async (item) => {
+    setSyncing(true);
+    await sb.from("shop").upsert(shopToRow({ ...item, ts: Date.now(), by: me || item.by || null }));
+    await fetchAll(); setSyncing(false); setShopEditing(null);
+  };
+  const toggleShopChecked = async (id) => {
+    const s = shop.find((x) => x.id === id); if (!s) return;
+    setShop((list) => list.map((x) => (x.id === id ? { ...x, checked: !x.checked } : x)));
+    await sb.from("shop").update({ checked: !s.checked }).eq("id", id);
+    fetchAll();
+  };
+  const removeShopItem = async (id) => {
+    setSyncing(true);
+    await sb.from("shop").delete().eq("id", id);
+    await fetchAll(); setSyncing(false); setShopEditing(null);
+  };
+  // record purchase into the linked favorite's history, then remove item
+  const recordBuy = async (item) => {
+    if (item.favId) {
+      const fav = favorites.find((f) => f.id === item.favId);
+      if (fav) {
+        const history = [...(fav.history || []), { store: item.store || "", price: (item.price === "" || item.price == null) ? "" : Number(item.price), date: todayKey() }];
+        await sb.from("favorites").update({ history }).eq("id", fav.id);
+      }
+    }
+    await sb.from("shop").delete().eq("id", item.id);
+  };
+  const buyShopItem = async (id) => {
+    const item = shop.find((x) => x.id === id); if (!item) return;
+    setSyncing(true);
+    await recordBuy(item);
+    await fetchAll(); setSyncing(false);
+  };
+  const clearCheckedShop = async () => {
+    setSyncing(true);
+    for (const item of shop.filter((s) => s.checked)) await recordBuy(item);
+    await fetchAll(); setSyncing(false);
+  };
+
+  // ----- favorites -----
+  const addFavorite = async (name) => {
+    if (favorites.some((f) => f.name.toLowerCase() === name.trim().toLowerCase())) return;
+    await sb.from("favorites").insert(favToRow({ id: uid(), name: name.trim(), history: [] }));
+    fetchAll();
+  };
+  const saveItemAsFavorite = async (item) => {
+    let fav = favorites.find((f) => f.name.toLowerCase() === item.name.trim().toLowerCase());
+    if (!fav) {
+      fav = { id: uid(), name: item.name.trim(), history: [] };
+      await sb.from("favorites").insert(favToRow(fav));
+    }
+    await sb.from("shop").update({ fav_id: fav.id }).eq("id", item.id);
+    fetchAll();
+  };
+  const removeFavorite = async (id) => {
+    await sb.from("favorites").delete().eq("id", id);
+    fetchAll();
+  };
+  const addFavoriteToList = async (fav) => {
+    if (shop.some((s) => s.favId === fav.id)) return;
+    const last = lastBuy(fav);
+    await sb.from("shop").insert(shopToRow({ id: uid(), name: fav.name, store: last?.store || "", price: "", favId: fav.id, checked: false, ts: Date.now(), by: me || null }));
+    fetchAll();
+  };
+
   // ---- loading / setup / lock gates ----
   if (fam === undefined) return <Shell><p className="text-center text-slate-400 py-20 text-sm">Opening the calendar…</p></Shell>;
   if (fam === null) return <Setup onDone={saveFamily} offline={offline} />;
@@ -329,6 +433,7 @@ function App() {
     : view === "day" ? `${MONTHS[parseKey(dayAnchor).getMonth()]} ${parseKey(dayAnchor).getFullYear()}`
     : view === "tasks" ? "To-do list"
     : view === "chores" ? "Chore rotation"
+    : view === "shop" ? "Shopping list"
     : "Family board";
 
   const openNew = (dayKey, memberId) => {
@@ -361,7 +466,7 @@ function App() {
       {/* view toggle */}
       <div className="px-4 pb-3 overflow-x-auto">
         <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold w-fit whitespace-nowrap">
-          {[["month","Month"],["week","Week"],["day","Day"],["tasks","Tasks"],["chores","Chores"],["board","Board"]].map(([v,label]) => (
+          {[["month","Month"],["week","Week"],["day","Day"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["board","Board"]].map(([v,label]) => (
             <button key={v} onClick={() => setView(v)}
               className={`px-3.5 py-1.5 rounded-full transition-colors ${view === v ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
               {label}
@@ -451,12 +556,17 @@ function App() {
       {view === "chores" && (
         <ChoresView chores={chores} memberById={memberById} onComplete={completeChore} onEdit={setChoreEditing} />
       )}
+      {view === "shop" && (
+        <ShoppingView shop={shop} favorites={favorites}
+          onToggle={toggleShopChecked} onBuy={buyShopItem} onEdit={setShopEditing} onClearChecked={clearCheckedShop}
+          onAddFav={addFavoriteToList} onSaveFav={saveItemAsFavorite} onManageFavs={() => setFavManage(true)} />
+      )}
       {view === "board" && (
         <Board members={fam.members} allEvents={allEvents} onDetail={setDetail} onAdd={(mId) => openNew(tk, mId)} />
       )}
 
       {/* floating add */}
-      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : setAddChoosing(true))}
+      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : view === "shop" ? setShopEditing("new") : setAddChoosing(true))}
         className="fixed bottom-5 right-5 w-14 h-14 rounded-full bg-teal-700 text-white text-3xl leading-none shadow-lg active:scale-95 transition-transform"
         aria-label="Add">+</button>
 
@@ -534,6 +644,22 @@ function App() {
       {/* family settings */}
       {famEditing && (
         <FamilyEditor fam={fam} onSave={(f) => { saveFamily(f); setFamEditing(false); }} onClose={() => setFamEditing(false)} />
+      )}
+
+      {/* shopping item editor */}
+      {shopEditing && (
+        <ShopItemEditor
+          key={shopEditing === "new" ? "new" : shopEditing.id}
+          initial={shopEditing === "new" ? { id: uid(), name: "", store: "", price: "", favId: null } : shopEditing}
+          isNew={shopEditing === "new"}
+          favorites={favorites}
+          onAdd={addShopItem} onSave={editShopItem} onRemove={removeShopItem} onClose={() => setShopEditing(null)}
+        />
+      )}
+
+      {/* favorites manager */}
+      {favManage && (
+        <FavoritesManager favorites={favorites} onAdd={addFavorite} onRemove={removeFavorite} onAddToList={addFavoriteToList} onClose={() => setFavManage(false)} />
       )}
     </Shell>
   );
@@ -1183,6 +1309,176 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
 }
 
 // ============================================================
+// SHOPPING
+// ============================================================
+function ShoppingView({ shop, favorites, onToggle, onBuy, onEdit, onClearChecked, onAddFav, onSaveFav, onManageFavs }) {
+  const favById = Object.fromEntries(favorites.map((f) => [f.id, f]));
+  const checkedCount = shop.filter((s) => s.checked).length;
+  const onListFavIds = new Set(shop.map((s) => s.favId).filter(Boolean));
+  const quickFavs = favorites.filter((f) => !onListFavIds.has(f.id));
+
+  return (
+    <div className="px-4 pb-28">
+      <div className="pb-3">
+        <div className="flex items-center justify-between pb-1.5">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Favorites — tap to add</p>
+          <button onClick={onManageFavs} className="text-xs font-semibold text-teal-700">Manage</button>
+        </div>
+        {favorites.length === 0 ? (
+          <p className="text-xs text-slate-400">No favorites yet. Add an item, then tap ☆ to save it as a favorite for reuse.</p>
+        ) : quickFavs.length === 0 ? (
+          <p className="text-xs text-slate-400">All your favorites are already on the list.</p>
+        ) : (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {quickFavs.map((f) => {
+              const hint = priceHint(f);
+              return (
+                <button key={f.id} onClick={() => onAddFav(f)}
+                  className="flex flex-col items-start px-3 py-2 rounded-xl bg-white border border-slate-200 whitespace-nowrap shrink-0 active:bg-slate-50">
+                  <span className="text-xs font-semibold text-slate-800">+ {f.name}</span>
+                  {hint && <span className="text-[10px] text-slate-400">{hint}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {shop.length === 0 ? (
+        <div className="text-center py-12">
+          <p className="text-4xl pb-2">🛒</p>
+          <p className="text-sm text-slate-400">List is empty. Tap + to add something,<br />or tap a favorite above.</p>
+        </div>
+      ) : (
+        <ul className="space-y-1.5">
+          {shop.map((s) => {
+            const fav = s.favId ? favById[s.favId] : null;
+            const hint = fav ? priceHint(fav) : "";
+            return (
+              <li key={s.id} className="rounded-xl bg-white border border-slate-200">
+                <div className="flex items-center gap-3 p-3">
+                  <button onClick={() => onToggle(s.id)} aria-label={s.checked ? "Uncheck" : "Check"}
+                    className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${s.checked ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
+                    {s.checked && <span className="text-xs font-bold">✓</span>}
+                  </button>
+                  <button onClick={() => onEdit(s)} className="flex-1 min-w-0 text-left">
+                    <span className={`block text-sm font-semibold truncate ${s.checked ? "line-through text-slate-400" : "text-slate-800"}`}>
+                      {s.name}
+                    </span>
+                    <span className="block text-[11px] text-slate-400 truncate">
+                      {[s.store, money(s.price)].filter(Boolean).join(" · ") || (hint ? hint : "tap to add store/price")}
+                    </span>
+                  </button>
+                  {!s.favId && (
+                    <button onClick={() => onSaveFav(s)} aria-label="Save as favorite" title="Save as favorite" className="text-slate-300 text-lg px-1">☆</button>
+                  )}
+                  {s.favId && <span className="text-amber-400 text-lg px-1" title="Saved favorite">★</span>}
+                  <button onClick={() => onBuy(s.id)} className="shrink-0 px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-bold">Bought</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {checkedCount > 0 && (
+        <button onClick={onClearChecked} className="mt-4 w-full py-3 rounded-xl bg-slate-800 text-white text-sm font-semibold">
+          Done shopping — clear {checkedCount} checked {checkedCount === 1 ? "item" : "items"}
+        </button>
+      )}
+      <p className="text-[11px] text-slate-400 text-center pt-3">
+        “Bought” records the price into that item's favorite (if saved) and clears it. Favorites remember your last &amp; cheapest price.
+      </p>
+    </div>
+  );
+}
+
+function ShopItemEditor({ initial, isNew, favorites, onAdd, onSave, onRemove, onClose }) {
+  const [s, setS] = useState(initial);
+  const set = (k,v) => setS((x) => ({ ...x, [k]: v }));
+  const match = favorites.find((f) => f.name.toLowerCase() === (s.name || "").trim().toLowerCase());
+  const hint = match ? priceHint(match) : "";
+  const ok = (s.name || "").trim();
+  const submit = () => {
+    const payload = { ...s, name: s.name.trim(), price: s.price === "" ? "" : Number(s.price), favId: s.favId || (match ? match.id : null) };
+    isNew ? onAdd(payload) : onSave(payload);
+  };
+  return (
+    <Sheet onClose={onClose} title={isNew ? "Add to list" : "Edit item"}>
+      <div className="space-y-3">
+        <Field label="Item">
+          <input autoFocus value={s.name} onChange={(e) => set("name", e.target.value)} placeholder="Milk, bread, dog food…"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+          {hint && <p className="text-[11px] text-teal-700 font-semibold pt-1">💡 {hint}</p>}
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Store (optional)">
+            <input value={s.store || ""} onChange={(e) => set("store", e.target.value)} placeholder="Walmart, Costco…"
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+          </Field>
+          <Field label="Price (optional)">
+            <input type="number" inputMode="decimal" step="0.01" value={s.price === "" || s.price == null ? "" : s.price}
+              onChange={(e) => set("price", e.target.value)} placeholder="3.00"
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+          </Field>
+        </div>
+        {match && !s.favId && <p className="text-[11px] text-slate-400">This matches your favorite “{match.name}” — buying it will update that favorite's price history.</p>}
+        <div className="flex gap-2 pt-1">
+          {!isNew && <button onClick={() => onRemove(s.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Remove</button>}
+          <button disabled={!ok} onClick={submit}
+            className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
+            {isNew ? "Add to list" : "Save"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function FavoritesManager({ favorites, onAdd, onRemove, onAddToList, onClose }) {
+  const [newName, setNewName] = useState("");
+  return (
+    <Sheet onClose={onClose} title="Favorites">
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Add a favorite (e.g. Milk)"
+            onKeyDown={(e) => { if (e.key === "Enter" && newName.trim()) { onAdd(newName); setNewName(""); } }}
+            className="flex-1 px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+          <button disabled={!newName.trim()} onClick={() => { onAdd(newName); setNewName(""); }}
+            className={`px-4 rounded-xl text-sm font-semibold text-white ${newName.trim() ? "bg-teal-700" : "bg-slate-300"}`}>Add</button>
+        </div>
+        {favorites.length === 0 ? (
+          <p className="text-xs text-slate-400 text-center py-6">No favorites yet.<br />Add regulars here, or tap ☆ on any list item.</p>
+        ) : (
+          <ul className="space-y-2">
+            {favorites.map((f) => {
+              const last = lastBuy(f), cheap = cheapestBuy(f);
+              return (
+                <li key={f.id} className="rounded-xl bg-white border border-slate-200 p-3">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 font-semibold text-sm text-slate-800">{f.name}</span>
+                    <button onClick={() => onAddToList(f)} className="px-2.5 py-1 rounded-lg bg-teal-50 text-teal-700 text-xs font-semibold">+ List</button>
+                    <button onClick={() => onRemove(f.id)} className="text-slate-400 px-1">✕</button>
+                  </div>
+                  {(last || cheap) && (
+                    <div className="pt-1.5 text-[11px] text-slate-500 space-y-0.5">
+                      {last && <p>Last: {money(last.price)}{last.store ? ` at ${last.store}` : ""} · {fmtShort(last.date)}</p>}
+                      {cheap && (!last || cheap.store !== last.store || cheap.price !== last.price) &&
+                        <p className="text-teal-700 font-semibold">Cheapest: {money(cheap.price)}{cheap.store ? ` at ${cheap.store}` : ""}</p>}
+                      <p className="text-slate-400">{(f.history || []).length} purchase{(f.history || []).length === 1 ? "" : "s"} recorded</p>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
+// ============================================================
 // EVENT EDITOR
 // ============================================================
 function EventEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
@@ -1409,6 +1705,7 @@ function FamilyEditor({ fam, onSave, onClose }) {
             </button>
           </>
         )}
+        <p className="text-center text-[10px] text-slate-300 pt-2">Family Calendar · v{APP_VERSION}</p>
       </div>
     </Sheet>
   );
