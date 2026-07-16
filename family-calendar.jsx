@@ -6,7 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "1.10.0";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -53,6 +53,9 @@ const dueLabel = (k) => {
 
 // ---------- recurrence ----------
 function occursOn(ev, k) {
+  if (ev.endDate && ev.endDate > ev.date && (!ev.recur || ev.recur === "none")) {
+    return k >= ev.date && k <= ev.endDate;
+  }
   if (ev.date === k) return true;
   if (!ev.recur || ev.recur === "none" || k < ev.date) return false;
   const n = diffDays(ev.date, k);
@@ -63,6 +66,13 @@ function occursOn(ev, k) {
   if (ev.recur === "yearly") return a.getDate() === b.getDate() && a.getMonth() === b.getMonth();
   return false;
 }
+function spanPos(ev, k) {
+  if (!ev.endDate || ev.endDate <= ev.date || (ev.recur && ev.recur !== "none")) return "single";
+  if (k === ev.date) return "start";
+  if (k === ev.endDate) return "end";
+  if (k > ev.date && k < ev.endDate) return "mid";
+  return null;
+}
 function eventsMapForRange(events, startK, endK) {
   const map = {};
   let d = parseKey(startK);
@@ -70,7 +80,7 @@ function eventsMapForRange(events, startK, endK) {
   while (d <= end) {
     const k = toKey(d);
     for (const ev of events) {
-      if (occursOn(ev, k)) (map[k] ||= []).push({ ...ev, date: k, seriesDate: ev.date });
+      if (occursOn(ev, k)) (map[k] ||= []).push({ ...ev, date: k, seriesDate: ev.date, _span: spanPos(ev, k) });
     }
     if (map[k]) map[k].sort((a,b) => ((a.time||"99") < (b.time||"99") ? -1 : 1));
     d = addDays(d, 1);
@@ -458,6 +468,10 @@ export default function FamilyCalendar() {
     <TaskSummary openTasks={openTasks} doneCount={doneTasks.length} memberById={memberById}
       onToggle={toggleTask} onOpenAll={() => setView("tasks")} onEdit={setTaskEditing} />
   );
+  const choreSummary = (
+    <ChoreSummary chores={chores} memberById={memberById}
+      onComplete={completeChore} onOpenAll={() => setView("chores")} onEdit={setChoreEditing} />
+  );
 
   return (
     <Shell>
@@ -572,15 +586,18 @@ export default function FamilyCalendar() {
       {view === "month" && (<>
         <MonthGrid cursor={cursor} setCursor={setCursor} allEvents={allEvents} colorOf={colorOf} onPickDay={openDay} onDetail={setDetail} />
         {taskSummary}
+        {choreSummary}
       </>)}
       {view === "week" && (<>
         <WeekView weekAnchor={weekAnchor} setWeekAnchor={setWeekAnchor} allEvents={allEvents} colorOf={colorOf} onPick={openDay} onDetail={setDetail} />
         {taskSummary}
+        {choreSummary}
       </>)}
       {view === "day" && (<>
         <DayView dayAnchor={dayAnchor} setDayAnchor={setDayAnchor} allEvents={allEvents} memberById={memberById} colorOf={colorOf}
           onDetail={setDetail} onAdd={() => openNew(dayAnchor)} />
         {taskSummary}
+        {choreSummary}
       </>)}
       {view === "tasks" && (
         <TasksView openTasks={openTasks} doneTasks={doneTasks} memberById={memberById}
@@ -641,8 +658,8 @@ export default function FamilyCalendar() {
         <EventEditor
           key={editing.__new ? "new" : editing.id}
           initial={editing.__new
-            ? { id: uid(), title: "", date: selectedDay || tk, time: "", notes: "", phone: "", location: "", recur: "none", visibility: "family", memberIds: [editing.presetMember || me || data.members[0].id] }
-            : { visibility: "family", phone: "", location: "", recur: "none", ...editing, date: editing.seriesDate || editing.date, memberIds: peopleOf(editing) }}
+            ? { id: uid(), title: "", date: selectedDay || tk, endDate: "", time: "", notes: "", phone: "", location: "", recur: "none", visibility: "family", memberIds: [editing.presetMember || me || data.members[0].id] }
+            : { visibility: "family", phone: "", location: "", recur: "none", endDate: "", ...editing, date: editing.seriesDate || editing.date, memberIds: peopleOf(editing) }}
           isNew={!!editing.__new}
           members={data.members}
           onSave={saveEvent} onDelete={deleteEvent} onClose={() => setEditing(null)}
@@ -742,7 +759,9 @@ function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete }) {
           {ev.title}{ev.visibility === "private" && <PrivateBadge />}
         </h3>
         <p className="text-sm text-slate-500 pt-0.5">
-          {fmtLong(ev.date)}{ev.time ? ` · ${fmtTime(ev.time)}` : " · All day"}
+          {ev.endDate && ev.endDate > (ev.seriesDate || ev.date)
+            ? `${fmtLong(ev.seriesDate || ev.date)} → ${fmtLong(ev.endDate)}`
+            : `${fmtLong(ev.date)}${ev.time ? ` · ${fmtTime(ev.time)}` : " · All day"}`}
         </p>
         {ev.recur && ev.recur !== "none" && <p className="text-xs font-semibold text-teal-700 pt-1">🔁 {RECUR_LABELS[ev.recur]}</p>}
         <div className="flex flex-wrap gap-1.5 pt-3">
@@ -816,14 +835,21 @@ function MonthGrid({ cursor, setCursor, allEvents, colorOf, onPickDay, onDetail 
                 {d.getDate()}
               </span>
               <span className="flex flex-col gap-0.5 pt-0.5 overflow-hidden">
-                {evs.slice(0,2).map((ev) => (
-                  <span key={ev.id + ev.date}
-                    onClick={(e) => { e.stopPropagation(); onDetail(ev); }}
-                    className="block rounded px-0.5 py-px text-[8.5px] leading-tight font-semibold text-white truncate"
-                    style={{ background: colorOf(ev) }}>
-                    {ev.title}
-                  </span>
-                ))}
+                {evs.slice(0,2).map((ev) => {
+                  const span = ev._span;
+                  const isSpan = span && span !== "single";
+                  const roundCls = !isSpan ? "rounded" : span === "start" ? "rounded-l" : span === "end" ? "rounded-r" : "";
+                  const marginCls = !isSpan ? "" : span === "start" ? "-mr-0.5" : span === "end" ? "-ml-0.5" : "-mx-0.5";
+                  const showTitle = !isSpan || span === "start" || d.getDay() === 0;
+                  return (
+                    <span key={ev.id + ev.date}
+                      onClick={(e) => { e.stopPropagation(); onDetail(ev); }}
+                      className={`block ${roundCls} ${marginCls} px-0.5 py-px text-[8.5px] leading-tight font-semibold text-white truncate`}
+                      style={{ background: colorOf(ev) }}>
+                      {showTitle ? ev.title : "\u00A0"}
+                    </span>
+                  );
+                })}
                 {evs.length > 2 && <span className="text-[9px] font-semibold text-slate-400 pl-0.5">+{evs.length - 2} more</span>}
               </span>
             </button>
@@ -1028,7 +1054,7 @@ function Board({ members, allEvents, onDetail, onAdd }) {
 function TaskSummary({ openTasks, doneCount, memberById, onToggle, onOpenAll, onEdit }) {
   const show = openTasks.slice(0, 5);
   return (
-    <div className="px-4 pt-4 pb-28">
+    <div className="px-4 pt-4 pb-2">
       <Collapsible storeKey="famcal:collapse:tasks" count={openTasks.length}
         title={<span className="flex items-center gap-2">Tasks
           <span onClick={(e) => { e.stopPropagation(); onOpenAll(); }} className="text-teal-700 font-semibold normal-case tracking-normal">View all ›</span>
@@ -1044,6 +1070,52 @@ function TaskSummary({ openTasks, doneCount, memberById, onToggle, onOpenAll, on
           {openTasks.length > 5 && (
             <button onClick={onOpenAll} className="mt-2 w-full text-center text-xs font-semibold text-teal-700">
               +{openTasks.length - 5} more — view all
+            </button>
+          )}
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+// ---------- chore summary ----------
+function ChoreSummary({ chores, memberById, onComplete, onOpenAll, onEdit }) {
+  if (!chores || chores.length === 0) return null;
+  const show = chores.slice(0, 5);
+  return (
+    <div className="px-4 pt-1 pb-28">
+      <Collapsible storeKey="famcal:collapse:chores" count={chores.length}
+        title={<span className="flex items-center gap-2">Chores
+          <span onClick={(e) => { e.stopPropagation(); onOpenAll(); }} className="text-teal-700 font-semibold normal-case tracking-normal">View all ›</span>
+        </span>}>
+        <div className="rounded-2xl bg-white border border-slate-200 p-3.5">
+          <ul className="divide-y divide-slate-100">
+            {show.map((c) => {
+              const turnId = whoseTurn(c);
+              const turn = memberById[turnId];
+              const done = choreDoneThisPeriod(c);
+              const solo = (c.memberIds || []).length === 1;
+              return (
+                <li key={c.id} className="flex items-center gap-3 py-2">
+                  <button onClick={() => onComplete(c.id)} aria-label={done ? "Undo" : "Mark done"}
+                    className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${done ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
+                    {done && <span className="text-xs font-bold">✓</span>}
+                  </button>
+                  <button onClick={() => onEdit(c)} className="flex-1 min-w-0 text-left">
+                    <span className={`block text-sm font-semibold truncate ${done ? "line-through text-slate-400" : "text-slate-800"}`}>{c.title}</span>
+                    <span className="block text-[11px] text-slate-400">
+                      {done ? `Done this ${c.cadence === "daily" ? "day" : "week"} ✓`
+                        : turn ? (solo ? turn.name : `${turn.name}'s turn`) : "—"}
+                    </span>
+                  </button>
+                  {turn && !done && <span className="w-3 h-3 rounded-full shrink-0" style={{ background: turn.color }} title={turn.name} />}
+                </li>
+              );
+            })}
+          </ul>
+          {chores.length > 5 && (
+            <button onClick={onOpenAll} className="mt-2 w-full text-center text-xs font-semibold text-teal-700">
+              +{chores.length - 5} more — view all
             </button>
           )}
         </div>
@@ -1107,7 +1179,7 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
 function TaskRow({ t, memberById, onToggle, onEdit, compact }) {
   const overdue = t.dueDate && !t.done && t.dueDate < todayKey();
   return (
-    <div className={`flex items-center gap-3 ${compact ? "py-2" : "p-3"}`}>
+    <div className={`flex items-center gap-3 ${compact ? "py-2" : "p-3"} ${overdue ? "bg-red-50/70 rounded-xl" : ""}`}>
       <button onClick={() => onToggle(t.id)} aria-label={t.done ? "Mark not done" : "Mark done"}
         className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${t.done ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
         {t.done && <span className="text-xs font-bold">✓</span>}
@@ -1543,7 +1615,7 @@ function EventEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
   const [ev, setEv] = useState(initial);
   const set = (k,v) => setEv((e) => ({ ...e, [k]: v }));
   const togglePerson = (id) => setEv((e) => ({ ...e, memberIds: e.memberIds.includes(id) ? e.memberIds.filter((x) => x !== id) : [...e.memberIds, id] }));
-  const ok = ev.title.trim() && ev.date && ev.memberIds.length > 0;
+  const ok = ev.title.trim() && ev.date && ev.memberIds.length > 0 && (!ev.endDate || ev.endDate >= ev.date);
   return (
     <Sheet onClose={onClose} title={isNew ? "New event" : "Edit event"}>
       <div className="space-y-3">
@@ -1561,8 +1633,20 @@ function EventEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
               className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
           </Field>
         </div>
+        {(!ev.recur || ev.recur === "none") && (
+          <Field label="Ends (optional — for multi-day events)">
+            <input type="date" value={ev.endDate || ""} min={ev.date} onChange={(e) => set("endDate", e.target.value)}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+            {ev.endDate && ev.endDate > ev.date && (
+              <p className="text-[11px] text-teal-700 pt-1">Spans {fmtShort(ev.date)} → {fmtShort(ev.endDate)}. Shows across all those days.</p>
+            )}
+            {ev.endDate && ev.endDate < ev.date && (
+              <p className="text-[11px] text-red-500 pt-1">End date is before the start date.</p>
+            )}
+          </Field>
+        )}
         <Field label="Repeats">
-          <select value={ev.recur || "none"} onChange={(e) => set("recur", e.target.value)}
+          <select value={ev.recur || "none"} onChange={(e) => setEv((x) => ({ ...x, recur: e.target.value, endDate: e.target.value !== "none" ? "" : x.endDate }))}
             className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm">
             <option value="none">Doesn't repeat</option>
             <option value="weekly">Every week</option>
@@ -1620,7 +1704,7 @@ function EventEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
         </Field>
         <div className="flex gap-2 pt-1">
           {!isNew && <button onClick={() => onDelete(ev.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
-          <button disabled={!ok} onClick={() => onSave({ ...ev, title: ev.title.trim(), time: ev.time || null, memberId: undefined })}
+          <button disabled={!ok} onClick={() => onSave({ ...ev, title: ev.title.trim(), time: ev.time || null, endDate: (ev.endDate && ev.endDate > ev.date) ? ev.endDate : null, memberId: undefined })}
             className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
             {isNew ? "Add to calendar" : "Save changes"}
           </button>
