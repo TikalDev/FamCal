@@ -6,7 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
-const APP_VERSION = "1.10.0";
+const APP_VERSION = "2.0.0";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -168,6 +168,7 @@ export default function FamilyCalendar() {
   const [shopEditing, setShopEditing] = useState(null);
   const [favManage, setFavManage] = useState(false);
   const [historyView, setHistoryView] = useState(false);
+  const [clearedView, setClearedView] = useState(null);
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -208,7 +209,7 @@ export default function FamilyCalendar() {
     setSyncing(true);
     try {
       const latest = (await loadData()) || dataRef.current;
-      const next = mutate(latest || { familyName: "Our Family", members: [], events: [], tasks: [], chores: [], shop: [], favorites: [], purchases: [] });
+      const next = mutate(latest || { familyName: "Our Family", members: [], events: [], tasks: [], chores: [], shop: [], favorites: [], purchases: [], cleared: [] });
       const stamped = await saveData(next);
       setData(stamped);
     } catch (e) { console.error("save failed", e); }
@@ -236,16 +237,18 @@ export default function FamilyCalendar() {
 
   const memberById = Object.fromEntries(data.members.map((m) => [m.id, m]));
   const colorOf = (ev) => (memberById[peopleOf(ev)[0]] || {}).color || "#94a3b8";
-  const allEvents = [...(data.events || []), ...privEvents];
+  const allEvents = [...(data.events || []).filter((e) => !e.cleared), ...privEvents];
   const tk = todayKey();
 
-  const tasks = data.tasks || [];
+  const tasks = (data.tasks || []).filter((t) => !t.cleared);
   const openTasks = tasks.filter((t) => !t.done).sort((a,b) => ((a.dueDate||"9999") < (b.dueDate||"9999") ? -1 : 1));
   const doneTasks = tasks.filter((t) => t.done);
-  const chores = data.chores || [];
+  const allChores = data.chores || [];
+  const chores = allChores.filter((c) => !(c.clearedPeriod != null && c.clearedPeriod === periodOf(c)));
   const shop = data.shop || [];         // active shopping list items
   const favorites = data.favorites || []; // saved favorites with price history
   const purchases = data.purchases || []; // everything ever bought (newest first when shown)
+  const cleared = data.cleared || [];   // cleared history (task/event/chore)
 
   const newForMe = (me && lastSeen)
     ? [...allEvents, ...tasks].filter((it) => it.ts && it.ts > lastSeen && it.by && it.by !== me && peopleOf(it).includes(me))
@@ -336,6 +339,59 @@ export default function FamilyCalendar() {
       }),
     }));
   };
+
+  // ----- swipe-to-clear + cleared history -----
+  const logCleared = (d, kind, refId, title, detail, memberIds) => ({
+    ...d,
+    cleared: [...(d.cleared || []), { id: uid(), kind, refId, title, detail: detail || "", memberIds: memberIds || [], clearedAt: Date.now(), by: me || null }],
+  });
+  const clearTask = (id) => {
+    commit((d) => {
+      const t = (d.tasks || []).find((x) => x.id === id);
+      if (!t || !t.done) return d;
+      const d2 = logCleared(d, "task", t.id, t.title, dueLabel(t.dueDate), t.memberIds);
+      return { ...d2, tasks: (d.tasks || []).map((x) => (x.id === id ? { ...x, cleared: true } : x)) };
+    });
+  };
+  const toggleEventDone = (ev) => {
+    commit((d) => ({
+      ...d,
+      events: (d.events || []).map((e) => {
+        if (e.id !== ev.id) return e;
+        const cur = e.doneOn || [];
+        return { ...e, doneOn: cur.includes(ev.date) ? cur.filter((x) => x !== ev.date) : [...cur, ev.date] };
+      }),
+    }));
+  };
+  const clearEventOccurrence = (ev) => {
+    const dateK = ev.date;
+    commit((d) => {
+      const e = (d.events || []).find((x) => x.id === ev.id);
+      if (!e || !(e.doneOn || []).includes(dateK)) return d;
+      const recurring = e.recur && e.recur !== "none";
+      const d2 = logCleared(d, "event", e.id, e.title, fmtLong(dateK), e.memberIds);
+      return {
+        ...d2,
+        events: (d.events || []).map((x) => {
+          if (x.id !== ev.id) return x;
+          return recurring ? { ...x, doneOn: (x.doneOn || []).filter((k) => k !== dateK) } : { ...x, cleared: true };
+        }),
+      };
+    });
+  };
+  const clearChore = (id) => {
+    commit((d) => {
+      const c = (d.chores || []).find((x) => x.id === id);
+      if (!c) return d;
+      const p = periodOf(c);
+      if (!(c.lastDone && c.lastDone.period === p)) return d;
+      const turnMember = (d.members || []).find((m) => m.id === whoseTurn(c));
+      const d2 = logCleared(d, "chore", c.id, c.title, turnMember ? `${turnMember.name}'s turn` : cadenceLabel(c.cadence), c.memberIds);
+      return { ...d2, chores: (d.chores || []).map((x) => (x.id === id ? { ...x, clearedPeriod: p } : x)) };
+    });
+  };
+  const deleteCleared = (id) => commit((d) => ({ ...d, cleared: (d.cleared || []).filter((h) => h.id !== id) }));
+  const clearAllCleared = (kind) => commit((d) => ({ ...d, cleared: (d.cleared || []).filter((h) => h.kind !== kind) }));
 
   // ----- shopping list -----
   const addShopItem = (item) => {
@@ -470,7 +526,7 @@ export default function FamilyCalendar() {
   );
   const choreSummary = (
     <ChoreSummary chores={chores} memberById={memberById}
-      onComplete={completeChore} onOpenAll={() => setView("chores")} onEdit={setChoreEditing} />
+      onComplete={completeChore} onClear={clearChore} onOpenAll={() => setView("chores")} onEdit={setChoreEditing} />
   );
 
   return (
@@ -601,10 +657,12 @@ export default function FamilyCalendar() {
       </>)}
       {view === "tasks" && (
         <TasksView openTasks={openTasks} doneTasks={doneTasks} memberById={memberById}
-          onToggle={toggleTask} onEdit={setTaskEditing} />
+          onToggle={toggleTask} onEdit={setTaskEditing} onClear={clearTask}
+          onHistory={() => setClearedView("task")} historyCount={cleared.filter((h) => h.kind === "task").length} />
       )}
       {view === "chores" && (
-        <ChoresView chores={chores} memberById={memberById} onComplete={completeChore} onEdit={setChoreEditing} />
+        <ChoresView chores={chores} memberById={memberById} onComplete={completeChore} onClear={clearChore} onEdit={setChoreEditing}
+          onHistory={() => setClearedView("chore")} historyCount={cleared.filter((h) => h.kind === "chore").length} />
       )}
       {view === "shop" && (
         <ShoppingView shop={shop} favorites={favorites}
@@ -650,7 +708,9 @@ export default function FamilyCalendar() {
       {/* event detail */}
       {detail && !editing && (
         <EventDetail ev={detail} memberById={memberById} colorOf={colorOf}
-          onClose={() => setDetail(null)} onEdit={() => setEditing(detail)} onDelete={() => deleteEvent(detail.id)} />
+          onClose={() => setDetail(null)} onEdit={() => setEditing(detail)} onDelete={() => deleteEvent(detail.id)}
+          onToggleDone={(ev) => { toggleEventDone(ev); setDetail((d) => d ? { ...d, doneOn: (d.doneOn||[]).includes(ev.date) ? (d.doneOn||[]).filter((x)=>x!==ev.date) : [...(d.doneOn||[]), ev.date] } : d); }}
+          onClearOccurrence={(ev) => { clearEventOccurrence(ev); setDetail(null); }} />
       )}
 
       {/* event editor */}
@@ -717,6 +777,11 @@ export default function FamilyCalendar() {
       {historyView && (
         <PurchaseHistory purchases={purchases} memberById={memberById} onDelete={deletePurchase} onClearAll={clearAllPurchases} onReadd={readdFromHistory} onClose={() => setHistoryView(false)} />
       )}
+
+      {clearedView && (
+        <ClearedHistory kind={clearedView} items={cleared.filter((h) => h.kind === clearedView)}
+          memberById={memberById} onDelete={deleteCleared} onClearAll={() => clearAllCleared(clearedView)} onClose={() => setClearedView(null)} />
+      )}
     </Shell>
   );
 }
@@ -750,10 +815,12 @@ function DaySheet({ dayKey, allEvents, memberById, colorOf, onClose, onDetail, o
 }
 
 // ---------- event detail ----------
-function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete }) {
+function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete, onToggleDone, onClearOccurrence }) {
   const tel = digitsOf(ev.phone);
+  const isDone = (ev.doneOn || []).includes(ev.date);
   return (
     <Sheet onClose={onClose} title="Event">
+      {isDone && <p className="text-[11px] font-bold text-teal-700 pb-1">✓ Marked done</p>}
       <div className="rounded-2xl bg-white border border-slate-200 p-4" style={{ borderLeft: `5px solid ${colorOf(ev)}` }}>
         <h3 className="text-lg font-bold text-slate-800">
           {ev.title}{ev.visibility === "private" && <PrivateBadge />}
@@ -784,6 +851,20 @@ function EventDetail({ ev, memberById, colorOf, onClose, onEdit, onDelete }) {
           {ev.location && (
             <a href={`https://maps.google.com/?q=${encodeURIComponent(ev.location)}`} target="_blank" rel="noopener noreferrer"
               className="flex-1 py-3 rounded-xl bg-white border border-slate-300 text-center text-sm font-semibold text-slate-700">🗺️ Directions</a>
+          )}
+        </div>
+      )}
+
+      {onToggleDone && ev.visibility !== "private" && (
+        <div className="flex gap-2 pt-3">
+          <button onClick={() => onToggleDone(ev)}
+            className={`flex-1 py-3 rounded-xl text-sm font-semibold border ${isDone ? "bg-teal-50 border-teal-600 text-teal-800" : "bg-white border-slate-300 text-slate-700"}`}>
+            {isDone ? "✓ Done" : "Mark done"}
+          </button>
+          {isDone && (
+            <button onClick={() => onClearOccurrence(ev)} className="flex-1 py-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold">
+              Clear{ev.recur && ev.recur !== "none" ? " (returns next time)" : ""}
+            </button>
           )}
         </div>
       )}
@@ -1079,7 +1160,7 @@ function TaskSummary({ openTasks, doneCount, memberById, onToggle, onOpenAll, on
 }
 
 // ---------- chore summary ----------
-function ChoreSummary({ chores, memberById, onComplete, onOpenAll, onEdit }) {
+function ChoreSummary({ chores, memberById, onComplete, onClear, onOpenAll, onEdit }) {
   if (!chores || chores.length === 0) return null;
   const show = chores.slice(0, 5);
   return (
@@ -1125,7 +1206,7 @@ function ChoreSummary({ chores, memberById, onComplete, onOpenAll, onEdit }) {
 }
 
 // ---------- tasks view ----------
-function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
+function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit, onClear, onHistory, historyCount }) {
   const tk = todayKey();
   const overdue = openTasks.filter((t) => t.dueDate && t.dueDate < tk);
   const today = openTasks.filter((t) => t.dueDate === tk);
@@ -1139,7 +1220,7 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
         <p className={`text-[11px] font-bold uppercase tracking-wide pb-1.5 ${tone || "text-slate-400"}`}>{label}</p>
         <ul className="space-y-1.5">
           {list.map((t) => (
-            <li key={t.id} className="rounded-xl bg-white border border-slate-200">
+            <li key={t.id} className="rounded-xl border border-slate-200 overflow-hidden">
               <TaskRow t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} />
             </li>
           ))}
@@ -1149,6 +1230,9 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
 
   return (
     <div className="px-4 pb-24">
+      <div className="flex justify-end pb-2">
+        <button onClick={onHistory} className="text-xs font-semibold text-teal-700">Cleared{historyCount ? ` (${historyCount})` : ""}</button>
+      </div>
       {openTasks.length === 0 && doneTasks.length === 0 && (
         <p className="text-sm text-slate-400 text-center py-14">No tasks yet. Tap + to add the first one —<br />groceries, permission slips, fix the fence…</p>
       )}
@@ -1164,8 +1248,8 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
           {showDone && (
             <ul className="space-y-1.5 pt-2">
               {doneTasks.map((t) => (
-                <li key={t.id} className="rounded-xl bg-slate-100/70 border border-slate-200">
-                  <TaskRow t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} />
+                <li key={t.id} className="rounded-xl border border-slate-200 overflow-hidden">
+                  <TaskRow t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} onClear={onClear} />
                 </li>
               ))}
             </ul>
@@ -1176,10 +1260,10 @@ function TasksView({ openTasks, doneTasks, memberById, onToggle, onEdit }) {
   );
 }
 
-function TaskRow({ t, memberById, onToggle, onEdit, compact }) {
+function TaskRow({ t, memberById, onToggle, onEdit, onClear, compact }) {
   const overdue = t.dueDate && !t.done && t.dueDate < todayKey();
-  return (
-    <div className={`flex items-center gap-3 ${compact ? "py-2" : "p-3"} ${overdue ? "bg-red-50/70 rounded-xl" : ""}`}>
+  const inner = (
+    <div className={`flex items-center gap-3 ${compact ? "py-2" : "p-3"} ${overdue ? "bg-red-50/70 rounded-xl" : "bg-white"}`}>
       <button onClick={() => onToggle(t.id)} aria-label={t.done ? "Mark not done" : "Mark done"}
         className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${t.done ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
         {t.done && <span className="text-xs font-bold">✓</span>}
@@ -1187,8 +1271,8 @@ function TaskRow({ t, memberById, onToggle, onEdit, compact }) {
       <button onClick={() => onEdit(t)} className="flex-1 min-w-0 text-left">
         <span className={`block text-sm font-semibold truncate ${t.done ? "line-through text-slate-400" : "text-slate-800"}`}>{t.title}</span>
         <span className={`block text-[11px] ${overdue ? "text-red-500 font-semibold" : "text-slate-400"}`}>
-          {dueLabel(t.dueDate)}
-          {peopleOf(t).length > 0 && <> · {peopleOf(t).map((id) => (memberById[id]||{}).name).filter(Boolean).join(", ")}</>}
+          {t.done && onClear ? "Done — swipe right to clear" : dueLabel(t.dueDate)}
+          {!t.done && peopleOf(t).length > 0 && <> · {peopleOf(t).map((id) => (memberById[id]||{}).name).filter(Boolean).join(", ")}</>}
         </span>
       </button>
       <span className="flex -space-x-1 shrink-0">
@@ -1198,6 +1282,8 @@ function TaskRow({ t, memberById, onToggle, onEdit, compact }) {
       </span>
     </div>
   );
+  if (onClear) return <SwipeRow enabled={t.done} onSwipe={() => onClear(t.id)}>{inner}</SwipeRow>;
+  return inner;
 }
 
 // ---------- task editor ----------
@@ -1249,9 +1335,13 @@ function TaskEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
 }
 
 // ---------- chores view ----------
-function ChoresView({ chores, memberById, onComplete, onEdit }) {
+function ChoresView({ chores, memberById, onComplete, onClear, onEdit, onHistory, historyCount }) {
+  const curP = (c) => periodOf(c);
   return (
     <div className="px-4 pb-24">
+      <div className="flex justify-end pb-2">
+        <button onClick={onHistory} className="text-xs font-semibold text-teal-700">Cleared{historyCount ? ` (${historyCount})` : ""}</button>
+      </div>
       {chores.length === 0 && (
         <div className="text-center py-14">
           <p className="text-4xl pb-2">🔄</p>
@@ -1267,8 +1357,9 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
           const solo = order.length === 1;
           const nextId = whoseTurn(c, c.cadence === "daily" ? toKey(addDays(new Date(),1)) : toKey(addDays(new Date(),7)));
           const next = memberById[nextId];
-          return (
-            <li key={c.id} className="rounded-2xl bg-white border border-slate-200 p-3.5"
+          const overdue = !done && c.lastDone && c.lastDone.period < curP(c) - 1;
+          const inner = (
+            <li className={`rounded-2xl border p-3.5 ${overdue ? "bg-red-50/70 border-red-200" : "bg-white border-slate-200"}`}
               style={{ borderLeft: `5px solid ${(turn||{}).color || "#94a3b8"}` }}>
               <div className="flex items-start gap-3">
                 <button onClick={() => onComplete(c.id)} aria-label={done ? "Undo" : "Mark done"}
@@ -1279,12 +1370,12 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
                   <span className="block text-sm font-bold text-slate-800">{c.title}</span>
                   {done ? (
                     <span className="block text-xs text-teal-700 font-semibold pt-0.5">
-                      Done this {c.cadence === "daily" ? "day" : "week"} ✓{solo ? "" : next ? ` — ${next.name}'s turn next` : ""}
+                      Done this {c.cadence === "daily" ? "day" : "week"} ✓ — swipe right to clear{solo ? "" : next ? ` · ${next.name} next` : ""}
                     </span>
                   ) : (
                     <span className="block text-xs pt-0.5">
-                      <span className="font-bold" style={{ color: (turn||{}).color }}>{turn ? (solo ? turn.name : `${turn.name}'s turn`) : "—"}</span>
-                      <span className="text-slate-400"> · {cadenceLabel(c.cadence)}</span>
+                      <span className="font-bold" style={{ color: overdue ? "#dc2626" : (turn||{}).color }}>{turn ? (solo ? turn.name : `${turn.name}'s turn`) : "—"}</span>
+                      <span className={overdue ? "text-red-500 font-semibold" : "text-slate-400"}> · {overdue ? "overdue" : cadenceLabel(c.cadence)}</span>
                     </span>
                   )}
                   {!solo && (
@@ -1304,11 +1395,16 @@ function ChoresView({ chores, memberById, onComplete, onEdit }) {
               </div>
             </li>
           );
+          return (
+            <div key={c.id} className="rounded-2xl overflow-hidden">
+              <SwipeRow enabled={done} onSwipe={() => onClear(c.id)}>{inner}</SwipeRow>
+            </div>
+          );
         })}
       </ul>
       {chores.length > 0 && (
         <p className="text-[11px] text-slate-400 text-center pt-4">
-          Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat.
+          Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat. Swipe a done chore right to clear it (it returns next time).
         </p>
       )}
     </div>
@@ -1515,6 +1611,42 @@ function PurchaseHistory({ purchases, memberById, onDelete, onClearAll, onReadd,
           <button onClick={() => { if (confirm("Clear the entire purchase history? This can't be undone.")) onClearAll(); }}
             className="w-full py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">
             Clear all history
+          </button>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+// ---------- cleared history ----------
+function ClearedHistory({ kind, items, memberById, onDelete, onClearAll, onClose }) {
+  const label = kind === "task" ? "Cleared tasks" : kind === "event" ? "Cleared events" : "Cleared chores";
+  const sorted = [...items].sort((a, b) => (b.clearedAt || 0) - (a.clearedAt || 0));
+  const whenStr = (ms) => {
+    if (!ms) return "";
+    const d = new Date(ms);
+    return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}, ${fmtTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`)}`;
+  };
+  return (
+    <Sheet onClose={onClose} title={label}>
+      {sorted.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">Nothing cleared yet.<br />Swipe a completed item right to clear it — it'll be logged here.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {sorted.map((h) => (
+            <div key={h.id} className="flex items-center gap-3 rounded-xl bg-white border border-slate-200 p-3">
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-semibold text-slate-800 truncate line-through decoration-slate-300">{h.title}</span>
+                <span className="block text-[11px] text-slate-400 truncate">
+                  {[h.detail, h.by && memberById[h.by] ? `by ${memberById[h.by].name}` : null, whenStr(h.clearedAt)].filter(Boolean).join(" · ")}
+                </span>
+              </span>
+              <button onClick={() => onDelete(h.id)} aria-label="Remove from history" className="shrink-0 text-slate-300 px-1 text-sm">✕</button>
+            </div>
+          ))}
+          <button onClick={() => { if (confirm("Clear this entire history list? This can't be undone.")) onClearAll(); }}
+            className="mt-3 w-full py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">
+            Clear all
           </button>
         </div>
       )}
@@ -1764,7 +1896,7 @@ function Setup({ onDone }) {
           <MemberEditorList members={members} setMembers={setMembers} />
         </div>
         <button disabled={!ok}
-          onClick={() => onDone({ familyName: familyName.trim() || "Our Family", members: clean, events: [], tasks: [], chores: [], shop: [], favorites: [], purchases: [] })}
+          onClick={() => onDone({ familyName: familyName.trim() || "Our Family", members: clean, events: [], tasks: [], chores: [], shop: [], favorites: [], purchases: [], cleared: [] })}
           className={`mt-8 w-full py-3.5 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
           Create our calendar
         </button>
@@ -1831,6 +1963,53 @@ function FamilyEditor({ familyName, members: initMembers, adminPin: initPin, onS
 }
 
 // ---------- small ui ----------
+function SwipeRow({ enabled, onSwipe, children }) {
+  const [dx, setDx] = useState(0);
+  const [swiping, setSwiping] = useState(false);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const decided = useRef(null);
+  const onStart = (e) => {
+    if (!enabled) return;
+    const t = e.touches ? e.touches[0] : e;
+    startX.current = t.clientX; startY.current = t.clientY; decided.current = null;
+    setSwiping(true);
+  };
+  const onMove = (e) => {
+    if (!enabled || !swiping) return;
+    const t = e.touches ? e.touches[0] : e;
+    const mx = t.clientX - startX.current;
+    const my = t.clientY - startY.current;
+    if (decided.current === null) {
+      if (Math.abs(mx) > 8 || Math.abs(my) > 8) decided.current = Math.abs(mx) > Math.abs(my) ? "h" : "v";
+    }
+    if (decided.current === "h") {
+      if (e.cancelable) e.preventDefault();
+      setDx(Math.max(0, mx));
+    }
+  };
+  const onEnd = () => {
+    if (!enabled) return;
+    setSwiping(false);
+    if (dx > 90) { setDx(0); onSwipe && onSwipe(); }
+    else setDx(0);
+  };
+  return (
+    <div className="relative overflow-hidden">
+      {enabled && dx > 0 && (
+        <div className="absolute inset-0 flex items-center px-4 bg-emerald-500 text-white text-sm font-bold rounded-xl">✓ Clear</div>
+      )}
+      <div
+        onTouchStart={onStart} onTouchMove={onMove} onTouchEnd={onEnd}
+        onMouseDown={onStart} onMouseMove={(e) => swiping && onMove(e)} onMouseUp={onEnd} onMouseLeave={() => swiping && onEnd()}
+        style={{ transform: `translateX(${dx}px)`, transition: swiping ? "none" : "transform 0.2s ease" }}
+        className="relative">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function Collapsible({ storeKey, title, count, children, className }) {
   const [open, setOpen] = useState(true);
   useEffect(() => {
