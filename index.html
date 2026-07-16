@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Family Calendar</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#0f766e" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="FamCal" />
+<link rel="apple-touch-icon" href="icon-192.png" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📅</text></svg>" />
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -170,7 +177,7 @@ function App() {
         sb.from("chores").select("*"),
       ]);
       if (f.error || e.error || t.error || c.error) throw (f.error || e.error || t.error || c.error);
-      setFam(f.data ? { name: f.data.name, members: f.data.members || [], passcode: f.data.passcode || null } : null);
+      setFam(f.data ? { name: f.data.name, members: f.data.members || [], passcode: f.data.passcode || null, adminPin: f.data.admin_pin || null } : null);
       setEvents((e.data || []).map(rowToEvent));
       setTasks((t.data || []).map(rowToTask));
       setChores((c.data || []).map(rowToChore));
@@ -204,7 +211,7 @@ function App() {
   // ---- writes ----
   const saveFamily = async (f) => {
     setSyncing(true);
-    const { error } = await sb.from("family").upsert({ id: 1, name: f.name, members: f.members, passcode: f.passcode || null });
+    const { error } = await sb.from("family").upsert({ id: 1, name: f.name, members: f.members, passcode: f.passcode || null, admin_pin: f.adminPin || null });
     if (error) console.error(error);
     await fetchAll();
     setSyncing(false);
@@ -1303,6 +1310,7 @@ function MemberEditorList({ members, setMembers }) {
 function Setup({ onDone, offline }) {
   const [familyName, setFamilyName] = useState("");
   const [passcode, setPasscode] = useState("");
+  const [adminPin, setAdminPin] = useState("");
   const [members, setMembers] = useState([{ id: uid(), name: "", color: MEMBER_COLORS[0].hex }]);
   const clean = members.map((m) => ({ ...m, name: m.name.trim() })).filter((m) => m.name);
   const ok = clean.length > 0 && !offline;
@@ -1328,8 +1336,15 @@ function Setup({ onDone, offline }) {
           </Field>
           <p className="text-[11px] text-slate-400 pt-1">Anyone opening your calendar's web address will be asked for this. Share it with the family only.</p>
         </div>
+        <div className="pt-4">
+          <Field label="Admin PIN (optional)">
+            <input value={adminPin} onChange={(e) => setAdminPin(e.target.value)} placeholder="e.g. 1379"
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+          </Field>
+          <p className="text-[11px] text-slate-400 pt-1">If set, only someone with this PIN can add/remove people or change settings later. Keep it separate from the passcode — grown-ups only.</p>
+        </div>
         <button disabled={!ok}
-          onClick={() => onDone({ name: familyName.trim() || "Our Family", members: clean, passcode: passcode.trim() || null })}
+          onClick={() => onDone({ name: familyName.trim() || "Our Family", members: clean, passcode: passcode.trim() || null, adminPin: adminPin.trim() || null })}
           className={`mt-8 w-full py-3.5 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
           Create our calendar
         </button>
@@ -1341,29 +1356,59 @@ function Setup({ onDone, offline }) {
 function FamilyEditor({ fam, onSave, onClose }) {
   const [name, setName] = useState(fam.name);
   const [passcode, setPasscode] = useState(fam.passcode || "");
+  const [adminPin, setAdminPin] = useState(fam.adminPin || "");
   const [members, setMembers] = useState(fam.members);
+  // If an admin PIN is set, people-management stays locked until it's entered.
+  const [unlocked, setUnlocked] = useState(!fam.adminPin);
+  const [pinTry, setPinTry] = useState("");
+  const [pinWrong, setPinWrong] = useState(false);
   const clean = members.map((m) => ({ ...m, name: m.name.trim() })).filter((m) => m.name);
+  const tryUnlock = () => {
+    if (pinTry === fam.adminPin) { setUnlocked(true); setPinWrong(false); }
+    else { setPinWrong(true); setPinTry(""); }
+  };
   return (
     <Sheet onClose={onClose} title="Family settings">
       <div className="space-y-4">
-        <Field label="Family name">
-          <input value={name} onChange={(e) => setName(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
-        </Field>
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 pb-2">Family members</p>
-          <MemberEditorList members={members} setMembers={setMembers} />
-          <p className="text-[11px] text-slate-400 pt-2">Removing a person doesn't delete their events — they just show up grey.</p>
-        </div>
-        <Field label="Family passcode (blank = no passcode)">
-          <input value={passcode} onChange={(e) => setPasscode(e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
-        </Field>
-        <button disabled={clean.length === 0}
-          onClick={() => onSave({ name: name.trim() || "Our Family", members: clean, passcode: passcode.trim() || null })}
-          className={`w-full py-3 rounded-xl text-sm font-semibold text-white ${clean.length ? "bg-teal-700" : "bg-slate-300"}`}>
-          Save family settings
-        </button>
+        {!unlocked ? (
+          <div className="rounded-2xl bg-slate-100 p-4 text-center">
+            <p className="text-2xl pb-1">🔑</p>
+            <p className="text-sm font-semibold text-slate-700 pb-0.5">Admin PIN required</p>
+            <p className="text-[11px] text-slate-500 pb-3">Enter the admin PIN to add or remove people and change family settings.</p>
+            <input type="password" inputMode="numeric" value={pinTry} autoFocus
+              onChange={(e) => { setPinTry(e.target.value); setPinWrong(false); }}
+              onKeyDown={(e) => e.key === "Enter" && tryUnlock()}
+              className="w-full text-center tracking-widest px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+            {pinWrong && <p className="text-xs text-red-500 pt-2">Incorrect PIN.</p>}
+            <button onClick={tryUnlock} className="mt-3 w-full py-2.5 rounded-xl bg-teal-700 text-white text-sm font-semibold">Unlock</button>
+          </div>
+        ) : (
+          <>
+            <Field label="Family name">
+              <input value={name} onChange={(e) => setName(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+            </Field>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 pb-2">Family members</p>
+              <MemberEditorList members={members} setMembers={setMembers} />
+              <p className="text-[11px] text-slate-400 pt-2">Removing a person doesn't delete their events — they just show up grey.</p>
+            </div>
+            <Field label="Family passcode (blank = no passcode)">
+              <input value={passcode} onChange={(e) => setPasscode(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+            </Field>
+            <Field label="Admin PIN (blank = anyone can edit these settings)">
+              <input value={adminPin} onChange={(e) => setAdminPin(e.target.value)} placeholder="e.g. 1379"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm" />
+              <p className="text-[11px] text-slate-400 pt-1">Protects this settings screen. Keep it different from the family passcode, and share it only with the grown-ups.</p>
+            </Field>
+            <button disabled={clean.length === 0}
+              onClick={() => onSave({ name: name.trim() || "Our Family", members: clean, passcode: passcode.trim() || null, adminPin: adminPin.trim() || null })}
+              className={`w-full py-3 rounded-xl text-sm font-semibold text-white ${clean.length ? "bg-teal-700" : "bg-slate-300"}`}>
+              Save family settings
+            </button>
+          </>
+        )}
       </div>
     </Sheet>
   );
@@ -1420,6 +1465,12 @@ function Sheet({ title, children, onClose }) {
       </div>
     </div>
   );
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch((e) => console.log("sw registration skipped", e));
+  });
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
