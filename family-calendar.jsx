@@ -6,7 +6,7 @@ const PRIV_KEY = "famcal:private";   // personal: this user's private events
 const ME_KEY = "famcal:me";          // personal: which member this device is
 const SEEN_KEY = "famcal:seen";      // personal: last time this user checked
 const POLL_MS = 20000;
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.1.1";
 
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
@@ -672,7 +672,7 @@ export default function FamilyCalendar() {
       )}
       {view === "chores" && (
         <ChoresView chores={chores} memberById={memberById} onComplete={completeChore} onClear={clearChore} onEdit={setChoreEditing}
-          onHistory={() => setClearedView("chore")} historyCount={cleared.filter((h) => h.kind === "chore").length} />
+          clearedChores={cleared.filter((h) => h.kind === "chore")} onDeleteCleared={deleteCleared} onClearAllCleared={() => clearAllCleared("chore")} />
       )}
       {view === "shop" && (
         <ShoppingView shop={shop} favorites={favorites}
@@ -1351,13 +1351,12 @@ function TaskEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
 }
 
 // ---------- chores view ----------
-function ChoresView({ chores, memberById, onComplete, onClear, onEdit, onHistory, historyCount }) {
+function ChoresView({ chores, memberById, onComplete, onClear, onEdit, clearedChores, onDeleteCleared, onClearAllCleared }) {
   const curP = (c) => periodOf(c);
+  const [showDone, setShowDone] = useState(false);
+  const doneList = [...(clearedChores || [])].sort((a, b) => (b.clearedAt || 0) - (a.clearedAt || 0));
   return (
     <div className="px-4 pb-24">
-      <div className="flex justify-end pb-2">
-        <button onClick={onHistory} className="text-xs font-semibold text-teal-700">Cleared{historyCount ? ` (${historyCount})` : ""}</button>
-      </div>
       {chores.length === 0 && (
         <div className="text-center py-14">
           <p className="text-4xl pb-2">🔄</p>
@@ -1428,6 +1427,35 @@ function ChoresView({ chores, memberById, onComplete, onClear, onEdit, onHistory
         <p className="text-[11px] text-slate-400 text-center pt-4">
           Multi-person chores rotate automatically each period; checking off early passes it on. Single-person chores just repeat. Once done, tap Clear (or swipe right) to tuck it away — it returns next time.
         </p>
+      )}
+
+      {doneList.length > 0 && (
+        <div className="pt-4">
+          <div className="flex items-center justify-between">
+            <button onClick={() => setShowDone((s) => !s)} className="text-xs font-semibold text-slate-400">
+              {showDone ? "Hide" : "Show"} completed ({doneList.length})
+            </button>
+            {showDone && (
+              <button onClick={() => { if (confirm("Clear the entire completed-chores history? This can't be undone.")) onClearAllCleared(); }}
+                className="text-xs font-semibold text-red-500">Clear all</button>
+            )}
+          </div>
+          {showDone && (
+            <ul className="space-y-1.5 pt-2">
+              {doneList.map((h) => (
+                <li key={h.id} className="flex items-center gap-3 rounded-xl bg-slate-100/70 border border-slate-200 p-3">
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-semibold text-slate-700 truncate line-through decoration-slate-300">{h.title}</span>
+                    <span className="block text-[11px] text-slate-400 truncate">
+                      {[h.detail, h.by && memberById[h.by] ? `by ${memberById[h.by].name}` : null].filter(Boolean).join(" · ")}
+                    </span>
+                  </span>
+                  <button onClick={() => onDeleteCleared(h.id)} aria-label="Remove from history" className="shrink-0 text-slate-300 px-1 text-sm">✕</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );
