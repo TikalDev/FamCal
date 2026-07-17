@@ -32,9 +32,7 @@
       serviceWorkerPath: "/FamCal/OneSignalSDKWorker.js",
       serviceWorkerParam: { scope: "/FamCal/" },
       notifyButton: {
-        enable: true,          // OneSignal's own bell/prompt
-        position: "bottom-left",  // keep it clear of the + add button (bottom-right)
-        offset: { bottom: "72px", left: "8px" },  // sit above the bottom nav bar
+        enable: false,   // driven from the in-app menu toggle instead of a floating bell
       },
       allowLocalhostAsSecureOrigin: true,
     });
@@ -81,7 +79,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.2.4";
+const APP_VERSION = "2.4.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -253,6 +251,8 @@ function App() {
   const [clearedView, setClearedView] = useState(null);  // null | 'task' | 'event' | 'chore'
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [notifOn, setNotifOn] = useState(false);   // reflects OneSignal opt-in state
   const [syncing, setSyncing] = useState(false);
   const [offline, setOffline] = useState(false);
 
@@ -324,6 +324,59 @@ function App() {
   };
   const markSeen = () => { const now = Date.now(); setLastSeen(now); lsSet("famcal:seen", now); };
 
+  // ----- notifications on/off (drives OneSignal opt-in from our menu) -----
+  // read current subscription state into notifOn
+  useEffect(() => {
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(async function (OneSignal) {
+      try {
+        const optedIn = OneSignal.User?.PushSubscription?.optedIn;
+        setNotifOn(!!optedIn);
+        // keep the toggle in sync if it changes
+        OneSignal.User.PushSubscription.addEventListener("change", (e) => {
+          setNotifOn(!!(e?.current?.optedIn));
+        });
+      } catch (e) {}
+    });
+  }, []);
+
+  const enableNotifications = () => {
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(async function (OneSignal) {
+      try {
+        // ask permission if not granted, then opt in
+        if (OneSignal.Notifications.permission !== true) {
+          await OneSignal.Notifications.requestPermission();
+        }
+        await OneSignal.User.PushSubscription.optIn();
+        if (me) tagPushMember(me);      // re-tag who this device is
+        setNotifOn(true);
+      } catch (e) {}
+    });
+  };
+  const disableNotifications = () => {
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(async function (OneSignal) {
+      try { await OneSignal.User.PushSubscription.optOut(); setNotifOn(false); } catch (e) {}
+    });
+  };
+
+  // Fire a push to everyone EXCEPT the person who made the change.
+  // Calls our Supabase Edge Function (which holds the OneSignal secret).
+  const pushNotify = async (title, message) => {
+    try {
+      await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          "apikey": SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ title, message, excludeMemberId: me || null }),
+      });
+    } catch (e) { /* notifications are best-effort; never block the save */ }
+  };
+
   // if already identified on load, (re)apply the push tags once fam is known
   useEffect(() => {
     if (me && fam?.members?.length) tagPushMember(me);
@@ -345,6 +398,7 @@ function App() {
     const isPrivate = ev.visibility === "private";
     const wasShared = events.some((e) => e.id === ev.id);
     const wasPrivate = privEvents.some((e) => e.id === ev.id);
+    const isNewShared = !isPrivate && !wasShared && !wasPrivate;
     if (isPrivate) {
       const next = wasPrivate ? privEvents.map((e) => (e.id === ev.id ? ev : e)) : [...privEvents, ev];
       setPrivEvents(next); lsSet("famcal:private", next);
@@ -356,6 +410,12 @@ function App() {
     await fetchAll();
     setSyncing(false);
     setEditing(null); setDetail(null);
+    // notify the family about a newly-added shared event
+    if (isNewShared) {
+      const meName = (fam?.members || []).find((m) => m.id === me)?.name || "Someone";
+      const when = ev.date ? fmtShort(ev.date) : "";
+      pushNotify("New event", `${meName} added "${ev.title}"${when ? ` on ${when}` : ""}`);
+    }
   };
 
   const deleteEvent = async (id) => {
@@ -372,11 +432,16 @@ function App() {
 
   const saveTask = async (tIn) => {
     setSyncing(true);
+    const isNew = !tasks.some((x) => x.id === tIn.id);
     const t = { ...tIn, ts: Date.now(), by: me || tIn.by || null };
     await sb.from("tasks").upsert(taskToRow(t));
     await fetchAll();
     setSyncing(false);
     setTaskEditing(null);
+    if (isNew) {
+      const meName = (fam?.members || []).find((m) => m.id === me)?.name || "Someone";
+      pushNotify("New task", `${meName} added a task: "${t.title}"`);
+    }
   };
   const deleteTask = async (id) => {
     setSyncing(true);
@@ -404,6 +469,10 @@ function App() {
     await fetchAll();
     setSyncing(false);
     setChoreEditing(null);
+    if (isNew) {
+      const meName = (fam?.members || []).find((m) => m.id === me)?.name || "Someone";
+      pushNotify("New chore", `${meName} set up a chore: "${c.title}"`);
+    }
   };
   const deleteChore = async (id) => {
     setSyncing(true);
@@ -660,7 +729,9 @@ function App() {
         <div className="flex items-center gap-2 pb-1">
           {offline && <span className="text-[10px] font-bold text-red-500">offline</span>}
           <span className={`w-2 h-2 rounded-full ${syncing ? "bg-amber-400" : "bg-emerald-400"}`} title={syncing ? "Saving…" : "Synced"} />
-          <button onClick={() => setFamEditing(true)} className="w-8 h-8 rounded-full bg-slate-200 text-sm" aria-label="Family settings">⚙️</button>
+          <button onClick={() => setMenuOpen(true)} className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center" aria-label="Menu">
+            <span className="text-lg leading-none">☰</span>
+          </button>
         </div>
       </header>
 
@@ -696,17 +767,6 @@ function App() {
           </div>
         </div>
       )}
-
-      {/* member legend / me picker */}
-      <div className="flex gap-2 px-4 pb-3 overflow-x-auto">
-        {fam.members.map((m) => (
-          <button key={m.id} onClick={() => pickMe(m.id)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap border transition-all ${me === m.id ? "border-slate-700 bg-white shadow-sm" : "border-transparent bg-slate-100 text-slate-600"}`}>
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: m.color }} />
-            {m.name}{me === m.id ? " · me" : ""}
-          </button>
-        ))}
-      </div>
 
       {/* "new for you" alert */}
       {newForMe.length > 0 && (
@@ -871,6 +931,54 @@ function App() {
       {/* family settings */}
       {famEditing && (
         <FamilyEditor fam={fam} onSave={(f) => { saveFamily(f); setFamEditing(false); }} onClose={() => setFamEditing(false)} />
+      )}
+
+      {/* main menu (hamburger): who am I, notifications, family settings */}
+      {menuOpen && (
+        <Sheet onClose={() => setMenuOpen(false)} title="Menu">
+          {/* who am I */}
+          <div className="pb-4">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 pb-2">I'm using this device as</p>
+            <div className="flex flex-wrap gap-2">
+              {fam.members.map((m) => (
+                <button key={m.id} onClick={() => pickMe(m.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border transition-all ${me === m.id ? "border-slate-700 bg-white shadow-sm" : "border-transparent bg-slate-100 text-slate-600"}`}>
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: m.color }} />
+                  {m.name}{me === m.id ? " · me" : ""}
+                </button>
+              ))}
+            </div>
+            {!me && <p className="text-[11px] text-amber-600 pt-2">Pick who you are so notifications reach the right people.</p>}
+          </div>
+
+          {/* notifications */}
+          <div className="py-4 border-t border-slate-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Notifications</p>
+                <p className="text-[11px] text-slate-400">Get pinged when the family adds events, tasks, or chores.</p>
+              </div>
+              <button onClick={() => (notifOn ? disableNotifications() : enableNotifications())}
+                className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${notifOn ? "bg-teal-600" : "bg-slate-300"}`}
+                aria-label="Toggle notifications">
+                <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white transition-all ${notifOn ? "left-[22px]" : "left-0.5"}`} />
+              </button>
+            </div>
+            {!me && notifOn && <p className="text-[11px] text-amber-600 pt-2">Tip: pick who you are above so we don't notify you about your own additions.</p>}
+          </div>
+
+          {/* family settings */}
+          <div className="py-4 border-t border-slate-100">
+            <button onClick={() => { setMenuOpen(false); setFamEditing(true); }}
+              className="w-full flex items-center justify-between py-1 text-left">
+              <span className="text-sm font-semibold text-slate-800">Family settings</span>
+              <span className="text-slate-400">›</span>
+            </button>
+            <p className="text-[11px] text-slate-400">Family name, members, colours, passcode.</p>
+          </div>
+
+          <p className="text-[10px] text-slate-300 text-center pt-4">FamCal {APP_VERSION}</p>
+        </Sheet>
       )}
 
       {/* shopping item editor */}
