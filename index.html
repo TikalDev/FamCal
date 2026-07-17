@@ -79,7 +79,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.5.0";
+const APP_VERSION = "2.5.2";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -543,6 +543,20 @@ function App() {
     await sb.from("events").update({ done_on: nextDoneOn }).eq("id", ev.id);
     fetchAll();
   };
+  // one tap: mark done AND clear it into Past events (recurring returns next time)
+  const markEventDoneAndClear = async (ev) => {
+    const dateK = ev.date;
+    setSyncing(true);
+    const recurring = ev.recur && ev.recur !== "none";
+    await logCleared("event", ev.id, ev.title, fmtLong(dateK), ev.memberIds);
+    if (recurring) {
+      const nextDoneOn = (ev.doneOn || []).filter((d) => d !== dateK);
+      await sb.from("events").update({ done_on: nextDoneOn }).eq("id", ev.id);
+    } else {
+      await sb.from("events").update({ cleared: true }).eq("id", ev.id);
+    }
+    await fetchAll(); setSyncing(false);
+  };
 
   // chore: only when done this period. recurring by nature — reappears next period.
   const clearChore = async (id) => {
@@ -913,8 +927,7 @@ function App() {
       {detail && !editing && (
         <EventDetail ev={detail} memberById={memberById} colorOf={colorOf} bgOf={bgOf}
           onClose={() => setDetail(null)} onEdit={() => setEditing(detail)} onDelete={() => deleteEvent(detail.id)}
-          onToggleDone={(ev) => { toggleEventDone(ev); setDetail((d) => d ? { ...d, doneOn: (d.doneOn||[]).includes(ev.date) ? (d.doneOn||[]).filter((x)=>x!==ev.date) : [...(d.doneOn||[]), ev.date] } : d); }}
-          onClearOccurrence={(ev) => { clearEventOccurrence(ev); setDetail(null); }} />
+          onMarkDoneAndClear={(ev) => { markEventDoneAndClear(ev); setDetail(null); }} />
       )}
 
       {/* event editor */}
@@ -1021,7 +1034,8 @@ function App() {
 
       {/* past events history */}
       {pastEventsOpen && (
-        <PastEvents allEvents={allEvents} memberById={memberById} bgOf={bgOf}
+        <PastEvents allEvents={allEvents} clearedEvents={cleared.filter((h) => h.kind === "event")}
+          memberById={memberById} bgOf={bgOf}
           onOpen={(ev) => { setPastEventsOpen(false); setDetail(ev); }} onClose={() => setPastEventsOpen(false)} />
       )}
 
@@ -1125,12 +1139,10 @@ function DaySheet({ dayKey, allEvents, memberById, colorOf, bgOf, onClose, onDet
   );
 }
 
-function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete, onToggleDone, onClearOccurrence }) {
+function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete, onMarkDoneAndClear }) {
   const tel = digitsOf(ev.phone);
-  const isDone = (ev.doneOn || []).includes(ev.date);
   return (
     <Sheet onClose={onClose} title="Event">
-      {isDone && <p className="text-[11px] font-bold text-teal-700 pb-1">✓ Marked done</p>}
       <div className="rounded-2xl bg-white border border-slate-200 p-4" style={(() => { const bg = bgOf(ev); const g = bg.startsWith("linear-gradient"); return g ? { borderLeft: "5px solid transparent", borderImage: `${bg} 1` } : { borderLeft: `5px solid ${bg}` }; })()}>
         <h3 className="text-lg font-bold text-slate-800">
           {ev.title}{ev.visibility === "private" && <PrivateBadge />}
@@ -1171,17 +1183,13 @@ function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete,
       )}
 
       {/* mark done / clear this occurrence */}
-      {onToggleDone && ev.visibility !== "private" && (
-        <div className="flex gap-2 pt-3">
-          <button onClick={() => onToggleDone(ev)}
-            className={`flex-1 py-3 rounded-xl text-sm font-semibold border ${isDone ? "bg-teal-50 border-teal-600 text-teal-800" : "bg-white border-slate-300 text-slate-700"}`}>
-            {isDone ? "✓ Done" : "Mark done"}
+      {onMarkDoneAndClear && ev.visibility !== "private" && (
+        <div className="pt-3">
+          <button onClick={() => onMarkDoneAndClear(ev)}
+            className="w-full py-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold">
+            Mark done{ev.recur && ev.recur !== "none" ? " (returns next time)" : ""}
           </button>
-          {isDone && (
-            <button onClick={() => onClearOccurrence(ev)} className="flex-1 py-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold">
-              Clear{ev.recur !== "none" ? " (returns next time)" : ""}
-            </button>
-          )}
+          <p className="text-[11px] text-slate-400 text-center pt-1.5">Marks it done and files it under Past events.</p>
         </div>
       )}
 
@@ -2004,41 +2012,68 @@ function PurchaseHistory({ purchases, memberById, onDelete, onClearAll, onReadd,
   );
 }
 
-function PastEvents({ allEvents, memberById, bgOf, onOpen, onClose }) {
+function PastEvents({ allEvents, clearedEvents, memberById, bgOf, onOpen, onClose }) {
   const tk = todayKey();
-  // one-off (non-recurring) events whose end (or date) is before today, newest first
-  const past = allEvents
+  // 1) one-off (non-recurring) events whose date is before today, still on the calendar
+  const aged = allEvents
     .filter((e) => (!e.recur || e.recur === "none") && (e.endDate || e.date) < tk)
-    .sort((a, b) => ((b.endDate || b.date) < (a.endDate || a.date) ? -1 : 1));
-  // group by month for readability
+    .map((e) => ({
+      key: e.id + e.date,
+      title: e.title,
+      dateK: e.date,
+      sortTs: parseKey(e.endDate || e.date).getTime(),
+      dateLabel: e.endDate && e.endDate > e.date ? `${fmtShort(e.date)} → ${fmtShort(e.endDate)}` : fmtLong(e.date),
+      timeLabel: e.time ? ` · ${fmtTime(e.time)}` : "",
+      members: peopleOf(e),
+      ev: e,           // full event, so it can be opened
+      cleared: false,
+    }));
+  // 2) events that were marked done + cleared (live in cleared history)
+  const clearedList = (clearedEvents || []).map((h) => ({
+    key: "cl-" + h.id,
+    title: h.title,
+    dateK: null,
+    sortTs: h.clearedAt || 0,
+    dateLabel: h.detail || "",     // detail holds the event's date string
+    timeLabel: "",
+    members: h.memberIds || [],
+    ev: null,                       // no live event to open (it was cleared)
+    cleared: true,
+  }));
+
+  const all = [...aged, ...clearedList].sort((a, b) => b.sortTs - a.sortTs);
+
+  // group by "Month Year" using dateK when we have it, else the cleared date
   const groups = {};
-  for (const e of past) {
-    const d = parseKey(e.date);
-    const key = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
-    (groups[key] ||= []).push(e);
+  for (const it of all) {
+    const d = it.dateK ? parseKey(it.dateK) : new Date(it.sortTs);
+    const label = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+    (groups[label] ||= []).push(it);
   }
+
   return (
     <Sheet onClose={onClose} title="Past events">
-      {past.length === 0 ? (
-        <p className="text-sm text-slate-400 text-center py-10">No past events yet.<br />Events that have already happened will show up here.</p>
+      {all.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">No past events yet.<br />Events that have happened — or that you've marked done and cleared — will show up here.</p>
       ) : (
         <div className="space-y-4">
           {Object.entries(groups).map(([month, list]) => (
             <div key={month}>
               <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 pb-1.5">{month}</p>
               <ul className="space-y-1.5">
-                {list.map((ev) => (
-                  <li key={ev.id + ev.date}>
-                    <button onClick={() => onOpen(ev)} className="w-full text-left flex items-center gap-3 rounded-xl bg-white border border-slate-200 p-3 active:bg-slate-50">
-                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: bgOf(ev) }} />
+                {list.map((it) => (
+                  <li key={it.key}>
+                    <button onClick={() => it.ev && onOpen(it.ev)} disabled={!it.ev}
+                      className={`w-full text-left flex items-center gap-3 rounded-xl bg-white border border-slate-200 p-3 ${it.ev ? "active:bg-slate-50" : "opacity-90"}`}>
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.ev ? bgOf(it.ev) : "#cbd5e1" }} />
                       <span className="flex-1 min-w-0">
-                        <span className="block text-sm font-semibold text-slate-800 truncate">{ev.title}</span>
-                        <span className="block text-[11px] text-slate-400">
-                          {ev.endDate && ev.endDate > ev.date ? `${fmtShort(ev.date)} → ${fmtShort(ev.endDate)}` : fmtLong(ev.date)}
-                          {ev.time ? ` · ${fmtTime(ev.time)}` : ""}
+                        <span className="block text-sm font-semibold text-slate-800 truncate">
+                          {it.title}
+                          {it.cleared && <span className="ml-1.5 text-[10px] font-bold text-emerald-600 align-middle">✓ done</span>}
                         </span>
+                        <span className="block text-[11px] text-slate-400 truncate">{it.dateLabel}{it.timeLabel}</span>
                       </span>
-                      {peopleOf(ev).slice(0,3).map((id) => memberById[id] && (
+                      {it.members.slice(0,3).map((id) => memberById[id] && (
                         <span key={id} className="w-4 h-4 rounded-full ring-2 ring-white shrink-0" style={{ background: memberById[id].color }} title={memberById[id].name} />
                       ))}
                     </button>
@@ -2047,7 +2082,7 @@ function PastEvents({ allEvents, memberById, bgOf, onOpen, onClose }) {
               </ul>
             </div>
           ))}
-          <p className="text-[11px] text-slate-400 text-center pt-2">Repeating events aren't listed here since they recur — only one-off past events.</p>
+          <p className="text-[11px] text-slate-400 text-center pt-2">Shows one-off events that have passed, plus events marked done and cleared. Repeating events aren't listed since they recur.</p>
         </div>
       )}
     </Sheet>
