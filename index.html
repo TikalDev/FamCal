@@ -79,7 +79,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.5.2";
+const APP_VERSION = "2.5.3";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -1036,7 +1036,9 @@ function App() {
       {pastEventsOpen && (
         <PastEvents allEvents={allEvents} clearedEvents={cleared.filter((h) => h.kind === "event")}
           memberById={memberById} bgOf={bgOf}
-          onOpen={(ev) => { setPastEventsOpen(false); setDetail(ev); }} onClose={() => setPastEventsOpen(false)} />
+          onOpen={(ev) => { setPastEventsOpen(false); setDetail(ev); }}
+          onDeleteEvent={deleteEvent} onDeleteCleared={deleteCleared}
+          onClose={() => setPastEventsOpen(false)} />
       )}
 
       {/* shopping item editor */}
@@ -2012,7 +2014,7 @@ function PurchaseHistory({ purchases, memberById, onDelete, onClearAll, onReadd,
   );
 }
 
-function PastEvents({ allEvents, clearedEvents, memberById, bgOf, onOpen, onClose }) {
+function PastEvents({ allEvents, clearedEvents, memberById, bgOf, onOpen, onDeleteEvent, onDeleteCleared, onClose }) {
   const tk = todayKey();
   // 1) one-off (non-recurring) events whose date is before today, still on the calendar
   const aged = allEvents
@@ -2027,6 +2029,8 @@ function PastEvents({ allEvents, clearedEvents, memberById, bgOf, onOpen, onClos
       members: peopleOf(e),
       ev: e,           // full event, so it can be opened
       cleared: false,
+      eventId: e.id,   // delete target: the real event
+      clearedId: null,
     }));
   // 2) events that were marked done + cleared (live in cleared history)
   const clearedList = (clearedEvents || []).map((h) => ({
@@ -2039,6 +2043,8 @@ function PastEvents({ allEvents, clearedEvents, memberById, bgOf, onOpen, onClos
     members: h.memberIds || [],
     ev: null,                       // no live event to open (it was cleared)
     cleared: true,
+    eventId: null,
+    clearedId: h.id,               // delete target: the history row
   }));
 
   const all = [...aged, ...clearedList].sort((a, b) => b.sortTs - a.sortTs);
@@ -2062,9 +2068,9 @@ function PastEvents({ allEvents, clearedEvents, memberById, bgOf, onOpen, onClos
               <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 pb-1.5">{month}</p>
               <ul className="space-y-1.5">
                 {list.map((it) => (
-                  <li key={it.key}>
+                  <li key={it.key} className="flex items-center gap-2">
                     <button onClick={() => it.ev && onOpen(it.ev)} disabled={!it.ev}
-                      className={`w-full text-left flex items-center gap-3 rounded-xl bg-white border border-slate-200 p-3 ${it.ev ? "active:bg-slate-50" : "opacity-90"}`}>
+                      className={`flex-1 min-w-0 text-left flex items-center gap-3 rounded-xl bg-white border border-slate-200 p-3 ${it.ev ? "active:bg-slate-50" : "opacity-90"}`}>
                       <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.ev ? bgOf(it.ev) : "#cbd5e1" }} />
                       <span className="flex-1 min-w-0">
                         <span className="block text-sm font-semibold text-slate-800 truncate">
@@ -2076,6 +2082,16 @@ function PastEvents({ allEvents, clearedEvents, memberById, bgOf, onOpen, onClos
                       {it.members.slice(0,3).map((id) => memberById[id] && (
                         <span key={id} className="w-4 h-4 rounded-full ring-2 ring-white shrink-0" style={{ background: memberById[id].color }} title={memberById[id].name} />
                       ))}
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!confirm(`Remove "${it.title}" from past events? This permanently deletes it.`)) return;
+                        if (it.eventId) onDeleteEvent(it.eventId);
+                        else if (it.clearedId) onDeleteCleared(it.clearedId);
+                      }}
+                      aria-label="Remove from past events"
+                      className="shrink-0 w-9 h-9 rounded-xl bg-slate-100 text-slate-400 flex items-center justify-center active:bg-slate-200">
+                      ✕
                     </button>
                   </li>
                 ))}
