@@ -26,6 +26,11 @@
     await OneSignal.init({
       appId: "6d9d2307-3add-4ad5-85c4-52687be34185",
       safari_web_id: "web.onesignal.auto.59acb98d-1515-493b-98a5-7443c569eebc",
+      // The app is served from the /FamCal/ subfolder, not the domain root,
+      // so tell the SDK where the service worker actually lives (otherwise it
+      // looks at the root, gets a 404, and no subscription registers).
+      serviceWorkerPath: "OneSignalSDKWorker.js",
+      serviceWorkerParam: { scope: "/FamCal/" },
       notifyButton: {
         enable: true,          // OneSignal's own bell/prompt
         position: "bottom-left",  // keep it clear of the + add button (bottom-right)
@@ -76,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.2.2";
+const APP_VERSION = "2.2.3";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
