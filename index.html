@@ -26,7 +26,11 @@
     await OneSignal.init({
       appId: "6d9d2307-3add-4ad5-85c4-52687be34185",
       safari_web_id: "web.onesignal.auto.59acb98d-1515-493b-98a5-7443c569eebc",
-      notifyButton: { enable: true },   // OneSignal's own bell/prompt
+      notifyButton: {
+        enable: true,          // OneSignal's own bell/prompt
+        position: "bottom-left",  // keep it clear of the + add button (bottom-right)
+        offset: { bottom: "72px", left: "8px" },  // sit above the bottom nav bar
+      },
       allowLocalhostAsSecureOrigin: true,
     });
     window.__oneSignalReady = true;
@@ -72,7 +76,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.2.1";
+const APP_VERSION = "2.2.2";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
