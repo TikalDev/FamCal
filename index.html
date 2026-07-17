@@ -22,6 +22,7 @@
 <script>
   window.OneSignalDeferred = window.OneSignalDeferred || [];
   window.OneSignalDeferred.push(async function (OneSignal) {
+    OneSignal.Debug.setLogLevel("trace");   // verbose logging while we set this up
     await OneSignal.init({
       appId: "6d9d2307-3add-4ad5-85c4-52687be34185",
       safari_web_id: "web.onesignal.auto.59acb98d-1515-493b-98a5-7443c569eebc",
@@ -29,6 +30,19 @@
       allowLocalhostAsSecureOrigin: true,
     });
     window.__oneSignalReady = true;
+
+    // When the browser grants permission, make sure the SDK actually opts the
+    // device in to a push subscription. The bell grants permission but doesn't
+    // always finalize the subscription on its own in v16.
+    OneSignal.Notifications.addEventListener("permissionChange", async (granted) => {
+      try { if (granted) await OneSignal.User.PushSubscription.optIn(); } catch (e) {}
+    });
+    // Also opt in if permission is already granted from a previous attempt.
+    try {
+      if (OneSignal.Notifications.permission === true) {
+        await OneSignal.User.PushSubscription.optIn();
+      }
+    } catch (e) {}
   });
 </script>
 <style>
@@ -58,7 +72,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
