@@ -17,6 +17,20 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<!-- OneSignal Web Push -->
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+<script>
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  window.OneSignalDeferred.push(async function (OneSignal) {
+    await OneSignal.init({
+      appId: "6d9d2307-3add-4ad5-85c4-52687be34185",
+      safari_web_id: "web.onesignal.auto.59acb98d-1515-493b-98a5-7443c569eebc",
+      notifyButton: { enable: true },   // OneSignal's own bell/prompt
+      allowLocalhostAsSecureOrigin: true,
+    });
+    window.__oneSignalReady = true;
+  });
+</script>
 <style>
   /* Render at a consistent size on every phone, ignoring per-browser text zoom */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -44,7 +58,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.1.1";
+const APP_VERSION = "2.2.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -265,8 +279,33 @@ function App() {
     if (lastSeen === null) { const now = Date.now(); setLastSeen(now); lsSet("famcal:seen", now); }
   }, []);
 
-  const pickMe = (id) => { setMe(id); lsSet("famcal:me", id); };
+  const pickMe = (id) => {
+    setMe(id);
+    lsSet("famcal:me", id);
+    // tag this device's push subscription with who they are, so notifications
+    // can target the right people (and skip whoever made a change)
+    tagPushMember(id);
+  };
+  // apply OneSignal tags for a member id (safe to call anytime; waits for SDK)
+  const tagPushMember = (id) => {
+    const mem = (fam?.members || []).find((m) => m.id === id);
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    window.OneSignalDeferred.push(async function (OneSignal) {
+      try {
+        await OneSignal.User.addTags({
+          member_id: id || "",
+          member_name: mem ? mem.name : "",
+        });
+      } catch (e) { /* ignore if not subscribed yet */ }
+    });
+  };
   const markSeen = () => { const now = Date.now(); setLastSeen(now); lsSet("famcal:seen", now); };
+
+  // if already identified on load, (re)apply the push tags once fam is known
+  useEffect(() => {
+    if (me && fam?.members?.length) tagPushMember(me);
+    // eslint-disable-next-line
+  }, [me, fam]);
 
   // ---- writes ----
   const saveFamily = async (f) => {
