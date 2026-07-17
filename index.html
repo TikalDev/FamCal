@@ -29,7 +29,7 @@
       // The app is served from the /FamCal/ subfolder, not the domain root,
       // so tell the SDK where the service worker actually lives (otherwise it
       // looks at the root, gets a 404, and no subscription registers).
-      serviceWorkerPath: "OneSignalSDKWorker.js",
+      serviceWorkerPath: "/FamCal/OneSignalSDKWorker.js",
       serviceWorkerParam: { scope: "/FamCal/" },
       notifyButton: {
         enable: true,          // OneSignal's own bell/prompt
@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.2.3";
+const APP_VERSION = "2.2.4";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
