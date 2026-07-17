@@ -79,7 +79,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.5.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -109,6 +109,10 @@ const fmtTime = (t) => {
   return `${hr}:${String(m).padStart(2,"0")} ${ampm}`;
 };
 const fmtLong = (k) => { const d = parseKey(k); return `${WEEKDAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}`; };
+// ordinal day: 1 -> "1st", 2 -> "2nd", 17 -> "17th"
+const ordinal = (n) => { const s = ["th","st","nd","rd"], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); };
+// compact weekday + ordinal, e.g. "Friday 17th"
+const fmtDayOrdinal = (k) => { const d = parseKey(k); return `${WEEKDAYS[d.getDay()]} ${ordinal(d.getDate())}`; };
 const fmtShort = (k) => { const d = parseKey(k); return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`; };
 const uid = () => Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4);
 const peopleOf = (it) => it.memberIds || [];
@@ -252,6 +256,8 @@ function App() {
   const [addChoosing, setAddChoosing] = useState(false);
   const [famEditing, setFamEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [monthCollapsed, setMonthCollapsed] = useState(false);   // hide the month grid, keep lists
+  const [pastEventsOpen, setPastEventsOpen] = useState(false);   // past-events history sheet
   const [notifOn, setNotifOn] = useState(false);   // reflects OneSignal opt-in state
   const [syncing, setSyncing] = useState(false);
   const [offline, setOffline] = useState(false);
@@ -717,6 +723,9 @@ function App() {
     <ChoreSummary chores={activeChores} memberById={memberById}
       onComplete={completeChore} onClear={clearChore} onOpenAll={() => setView("chores")} onEdit={setChoreEditing} />
   );
+  const shopSummary = (
+    <ShopSummary shop={shop} onOpenAll={() => setView("shop")} onToggle={toggleShopChecked} />
+  );
 
   return (
     <Shell>
@@ -816,20 +825,33 @@ function App() {
       )}
 
       {view === "month" && (<>
-        <MonthGrid cursor={cursor} setCursor={setCursor} allEvents={allEvents} colorOf={colorOf} bgOf={bgOf} onPickDay={openDay} onDetail={setDetail} />
+        <div className="px-4 pb-2 flex justify-end">
+          <button onClick={() => setMonthCollapsed((c) => !c)} className="text-xs font-semibold text-teal-700">
+            {monthCollapsed ? "Show calendar" : "Hide calendar — show lists only"}
+          </button>
+        </div>
+        {!monthCollapsed && (
+          <MonthGrid cursor={cursor} setCursor={setCursor} allEvents={allEvents} colorOf={colorOf} bgOf={bgOf} onPickDay={openDay} onDetail={setDetail} />
+        )}
         {taskSummary}
         {choreSummary}
+        {shopSummary}
+        <div className="pb-24" />
       </>)}
       {view === "week" && (<>
         <WeekView weekAnchor={weekAnchor} setWeekAnchor={setWeekAnchor} allEvents={allEvents} colorOf={colorOf} bgOf={bgOf} onPick={openDay} onDetail={setDetail} />
         {taskSummary}
         {choreSummary}
+        {shopSummary}
+        <div className="pb-24" />
       </>)}
       {view === "day" && (<>
         <DayView dayAnchor={dayAnchor} setDayAnchor={setDayAnchor} allEvents={allEvents} memberById={memberById} colorOf={colorOf} bgOf={bgOf}
           onDetail={setDetail} onAdd={() => openNew(dayAnchor)} />
         {taskSummary}
         {choreSummary}
+        {shopSummary}
+        <div className="pb-24" />
       </>)}
       {view === "tasks" && (
         <TasksView openTasks={openTasks} doneTasks={doneTasks} memberById={memberById}
@@ -870,6 +892,12 @@ function App() {
               <span className="block text-2xl pb-1">✅</span>
               <span className="block text-sm font-bold text-slate-800">Task</span>
               <span className="block text-[11px] text-slate-500">Something to get done — with a due date and who's responsible</span>
+            </button>
+            <button onClick={() => { setAddChoosing(false); setChoreEditing("new"); }}
+              className="rounded-2xl bg-white border border-slate-200 p-4 text-left active:bg-slate-50">
+              <span className="block text-2xl pb-1">🔄</span>
+              <span className="block text-sm font-bold text-slate-800">Chore</span>
+              <span className="block text-[11px] text-slate-500">A recurring job — rotating between people or one person's task</span>
             </button>
           </div>
         </Sheet>
@@ -967,6 +995,16 @@ function App() {
             {!me && notifOn && <p className="text-[11px] text-amber-600 pt-2">Tip: pick who you are above so we don't notify you about your own additions.</p>}
           </div>
 
+          {/* past events history */}
+          <div className="py-4 border-t border-slate-100">
+            <button onClick={() => { setMenuOpen(false); setPastEventsOpen(true); }}
+              className="w-full flex items-center justify-between py-1 text-left">
+              <span className="text-sm font-semibold text-slate-800">Past events</span>
+              <span className="text-slate-400">›</span>
+            </button>
+            <p className="text-[11px] text-slate-400">Look back at events that have already happened.</p>
+          </div>
+
           {/* family settings */}
           <div className="py-4 border-t border-slate-100">
             <button onClick={() => { setMenuOpen(false); setFamEditing(true); }}
@@ -979,6 +1017,12 @@ function App() {
 
           <p className="text-[10px] text-slate-300 text-center pt-4">FamCal {APP_VERSION}</p>
         </Sheet>
+      )}
+
+      {/* past events history */}
+      {pastEventsOpen && (
+        <PastEvents allEvents={allEvents} memberById={memberById} bgOf={bgOf}
+          onOpen={(ev) => { setPastEventsOpen(false); setDetail(ev); }} onClose={() => setPastEventsOpen(false)} />
       )}
 
       {/* shopping item editor */}
@@ -1286,7 +1330,7 @@ function DayView({ dayAnchor, setDayAnchor, allEvents, memberById, colorOf, bgOf
       <div className="flex justify-between items-center pb-3">
         <button onClick={() => move(-1)} className="px-3 py-1.5 rounded-lg text-slate-500 bg-slate-100 text-sm font-semibold">‹</button>
         <div className="text-center">
-          <span className="block text-sm font-bold text-slate-700">{dayAnchor === tk ? "Today" : fmtLong(dayAnchor)}</span>
+          <span className="block text-sm font-bold text-slate-700">{dayAnchor === tk ? `Today · ${fmtDayOrdinal(dayAnchor)}` : fmtDayOrdinal(dayAnchor)}</span>
           {dayAnchor !== tk && <button onClick={() => setDayAnchor(tk)} className="text-xs font-semibold text-teal-700">Back to today</button>}
         </div>
         <button onClick={() => move(1)} className="px-3 py-1.5 rounded-lg text-slate-500 bg-slate-100 text-sm font-semibold">›</button>
@@ -1439,7 +1483,7 @@ function ChoreSummary({ chores, memberById, onComplete, onClear, onOpenAll, onEd
   if (!chores || chores.length === 0) return null;
   const show = chores.slice(0, 5);
   return (
-    <div className="px-4 pt-1 pb-28">
+    <div className="px-4 pt-1 pb-2">
       <Collapsible storeKey="famcal:collapse:chores" count={chores.length}
         title={<span className="flex items-center gap-2">Chores
           <span onClick={(e) => { e.stopPropagation(); onOpenAll(); }} className="text-teal-700 font-semibold normal-case tracking-normal">View all ›</span>
@@ -1472,6 +1516,39 @@ function ChoreSummary({ chores, memberById, onComplete, onClear, onOpenAll, onEd
           {chores.length > 5 && (
             <button onClick={onOpenAll} className="mt-2 w-full text-center text-xs font-semibold text-teal-700">
               +{chores.length - 5} more — view all
+            </button>
+          )}
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+function ShopSummary({ shop, onOpenAll, onToggle }) {
+  if (!shop || shop.length === 0) return null;
+  const unchecked = shop.filter((s) => !s.checked);
+  const show = shop.slice(0, 6);
+  return (
+    <div className="px-4 pt-1 pb-2">
+      <Collapsible storeKey="famcal:collapse:shop" count={unchecked.length}
+        title={<span className="flex items-center gap-2">Shopping
+          <span onClick={(e) => { e.stopPropagation(); onOpenAll(); }} className="text-teal-700 font-semibold normal-case tracking-normal">View all ›</span>
+        </span>}>
+        <div className="rounded-2xl bg-white border border-slate-200 p-3.5">
+          <ul className="divide-y divide-slate-100">
+            {show.map((s) => (
+              <li key={s.id} className="flex items-center gap-3 py-2">
+                <button onClick={() => onToggle(s.id)} aria-label={s.checked ? "Uncheck" : "Check"}
+                  className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${s.checked ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
+                  {s.checked && <span className="text-xs font-bold">✓</span>}
+                </button>
+                <span className={`flex-1 min-w-0 text-sm font-semibold truncate ${s.checked ? "line-through text-slate-400" : "text-slate-800"}`}>{s.name}</span>
+              </li>
+            ))}
+          </ul>
+          {shop.length > 6 && (
+            <button onClick={onOpenAll} className="mt-2 w-full text-center text-xs font-semibold text-teal-700">
+              +{shop.length - 6} more — view all
             </button>
           )}
         </div>
@@ -1921,6 +1998,56 @@ function PurchaseHistory({ purchases, memberById, onDelete, onClearAll, onReadd,
             className="w-full py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">
             Clear all history
           </button>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+function PastEvents({ allEvents, memberById, bgOf, onOpen, onClose }) {
+  const tk = todayKey();
+  // one-off (non-recurring) events whose end (or date) is before today, newest first
+  const past = allEvents
+    .filter((e) => (!e.recur || e.recur === "none") && (e.endDate || e.date) < tk)
+    .sort((a, b) => ((b.endDate || b.date) < (a.endDate || a.date) ? -1 : 1));
+  // group by month for readability
+  const groups = {};
+  for (const e of past) {
+    const d = parseKey(e.date);
+    const key = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+    (groups[key] ||= []).push(e);
+  }
+  return (
+    <Sheet onClose={onClose} title="Past events">
+      {past.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">No past events yet.<br />Events that have already happened will show up here.</p>
+      ) : (
+        <div className="space-y-4">
+          {Object.entries(groups).map(([month, list]) => (
+            <div key={month}>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 pb-1.5">{month}</p>
+              <ul className="space-y-1.5">
+                {list.map((ev) => (
+                  <li key={ev.id + ev.date}>
+                    <button onClick={() => onOpen(ev)} className="w-full text-left flex items-center gap-3 rounded-xl bg-white border border-slate-200 p-3 active:bg-slate-50">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: bgOf(ev) }} />
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-semibold text-slate-800 truncate">{ev.title}</span>
+                        <span className="block text-[11px] text-slate-400">
+                          {ev.endDate && ev.endDate > ev.date ? `${fmtShort(ev.date)} → ${fmtShort(ev.endDate)}` : fmtLong(ev.date)}
+                          {ev.time ? ` · ${fmtTime(ev.time)}` : ""}
+                        </span>
+                      </span>
+                      {peopleOf(ev).slice(0,3).map((id) => memberById[id] && (
+                        <span key={id} className="w-4 h-4 rounded-full ring-2 ring-white shrink-0" style={{ background: memberById[id].color }} title={memberById[id].name} />
+                      ))}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          <p className="text-[11px] text-slate-400 text-center pt-2">Repeating events aren't listed here since they recur — only one-off past events.</p>
         </div>
       )}
     </Sheet>
