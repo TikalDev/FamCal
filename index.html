@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.6.3";
+const APP_VERSION = "2.6.4";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -269,6 +269,8 @@ function App() {
   const [famEditing, setFamEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [monthCollapsed, setMonthCollapsed] = useState(false);   // hide the month grid, keep lists
+  const [summaryLayout, setSummaryLayout] = useState(lsGet("famcal:summaryLayout") || "stacked"); // "stacked" | "columns"
+  const setSummaryLayoutSaved = (v) => { setSummaryLayout(v); lsSet("famcal:summaryLayout", v); };
   const [pastEventsOpen, setPastEventsOpen] = useState(false);   // past-events history sheet
   const [notifOn, setNotifOn] = useState(false);   // reflects OneSignal opt-in state
   const [syncing, setSyncing] = useState(false);
@@ -743,10 +745,12 @@ function App() {
 
   const taskSummary = (
     <TaskSummary openTasks={openTasks} doneCount={doneTasks.length} memberById={memberById} members={fam.members} me={me}
+      layout={summaryLayout} onSetLayout={setSummaryLayoutSaved}
       onToggle={toggleTask} onOpenAll={() => setView("tasks")} onEdit={setTaskEditing} />
   );
   const choreSummary = (
     <ChoreSummary chores={activeChores} memberById={memberById} members={fam.members} me={me}
+      layout={summaryLayout} onSetLayout={setSummaryLayoutSaved}
       onComplete={completeChore} onClear={clearChore} onOpenAll={() => setView("chores")} onEdit={setChoreEditing} />
   );
   const shopSummary = (
@@ -1474,44 +1478,54 @@ function Board({ members, allEvents, onDetail, onAdd }) {
 // ============================================================
 // TASKS
 // ============================================================
-function TaskSummary({ openTasks, doneCount, memberById, members, me, onToggle, onOpenAll, onEdit }) {
+function TaskSummary({ openTasks, doneCount, memberById, members, me, layout, onSetLayout, onToggle, onOpenAll, onEdit }) {
   const cols = personColumns(members || [], me, (mId) => openTasks.filter((t) => peopleOf(t).includes(mId)));
+  const layoutToggle = (
+    <span className="flex rounded-full bg-slate-200 p-0.5 text-[10px] font-semibold normal-case tracking-normal">
+      <span onClick={(e) => { e.stopPropagation(); onSetLayout("stacked"); }} className={`px-2 py-0.5 rounded-full ${layout !== "columns" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>Stacked</span>
+      <span onClick={(e) => { e.stopPropagation(); onSetLayout("columns"); }} className={`px-2 py-0.5 rounded-full ${layout === "columns" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>Columns</span>
+    </span>
+  );
+  const personBlock = ({ member, items, isMe }) => (
+    <div key={member.id} className={layout === "columns" ? "w-56 shrink-0 rounded-2xl bg-slate-100 p-2" : "rounded-2xl bg-slate-100 p-2 mb-2"}>
+      <div className="flex items-center gap-2 px-1 pb-1.5">
+        <span className="w-2.5 h-2.5 rounded-full" style={{ background: member.color }} />
+        <span className="flex-1 font-bold text-xs text-slate-800">{member.name}{isMe ? " · me" : ""}</span>
+        <span className="text-[11px] font-semibold text-slate-400">{items.length}</span>
+      </div>
+      <div className="rounded-xl bg-white border border-slate-200 divide-y divide-slate-100 px-2">
+        {items.sort((a,b) => ((a.dueDate||"9999") < (b.dueDate||"9999") ? -1 : 1)).slice(0,6).map((t) => (
+          <TaskRow key={t.id} t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} compact />
+        ))}
+      </div>
+    </div>
+  );
   return (
     <div className="px-4 pt-4 pb-2">
       <Collapsible storeKey="famcal:collapse:tasks" count={openTasks.length}
-        title={<span className="flex items-center gap-2">Tasks
+        title={<span className="flex items-center gap-2 flex-wrap">Tasks
           <span onClick={(e) => { e.stopPropagation(); onOpenAll(); }} className="text-teal-700 font-semibold normal-case tracking-normal">View all ›</span>
+          {openTasks.length > 0 && layoutToggle}
         </span>}>
         {openTasks.length === 0 ? (
           <div className="rounded-2xl bg-white border border-slate-200 p-3.5">
             <p className="text-xs text-slate-400 text-center py-3">All caught up — nothing on the list. 🎉</p>
           </div>
-        ) : (
+        ) : layout === "columns" ? (
           <div className="overflow-x-auto -mx-1 px-1">
             <div className="flex gap-2.5 min-w-max items-start">
-              {cols.map(({ member, items, isMe }) => (
-                <div key={member.id} className="w-56 shrink-0 rounded-2xl bg-slate-100 p-2">
-                  <div className="flex items-center gap-2 px-1 pb-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: member.color }} />
-                    <span className="flex-1 font-bold text-xs text-slate-800">{member.name}{isMe ? " · me" : ""}</span>
-                    <span className="text-[11px] font-semibold text-slate-400">{items.length}</span>
-                  </div>
-                  <div className="rounded-xl bg-white border border-slate-200 divide-y divide-slate-100 px-2">
-                    {items.sort((a,b) => ((a.dueDate||"9999") < (b.dueDate||"9999") ? -1 : 1)).slice(0,6).map((t) => (
-                      <TaskRow key={t.id} t={t} memberById={memberById} onToggle={onToggle} onEdit={onEdit} compact />
-                    ))}
-                  </div>
-                </div>
-              ))}
+              {cols.map((c) => personBlock(c))}
             </div>
           </div>
+        ) : (
+          <div>{cols.map((c) => personBlock(c))}</div>
         )}
       </Collapsible>
     </div>
   );
 }
 
-function ChoreSummary({ chores, memberById, members, me, onComplete, onClear, onOpenAll, onEdit }) {
+function ChoreSummary({ chores, memberById, members, me, layout, onSetLayout, onComplete, onClear, onOpenAll, onEdit }) {
   if (!chores || chores.length === 0) return null;
   const cols = personColumns(members || [], me, (mId) => chores.filter((c) => whoseTurn(c) === mId));
   const choreItem = (c) => {
@@ -1537,28 +1551,40 @@ function ChoreSummary({ chores, memberById, members, me, onComplete, onClear, on
       </li>
     );
   };
+  const layoutToggle = (
+    <span className="flex rounded-full bg-slate-200 p-0.5 text-[10px] font-semibold normal-case tracking-normal">
+      <span onClick={(e) => { e.stopPropagation(); onSetLayout("stacked"); }} className={`px-2 py-0.5 rounded-full ${layout !== "columns" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>Stacked</span>
+      <span onClick={(e) => { e.stopPropagation(); onSetLayout("columns"); }} className={`px-2 py-0.5 rounded-full ${layout === "columns" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>Columns</span>
+    </span>
+  );
+  const personBlock = ({ member, items, isMe }) => (
+    <div key={member.id} className={layout === "columns" ? "w-56 shrink-0 rounded-2xl bg-slate-100 p-2" : "rounded-2xl bg-slate-100 p-2 mb-2"}>
+      <div className="flex items-center gap-2 px-1 pb-1.5">
+        <span className="w-2.5 h-2.5 rounded-full" style={{ background: member.color }} />
+        <span className="flex-1 font-bold text-xs text-slate-800">{member.name}{isMe ? " · me" : ""}</span>
+        <span className="text-[11px] font-semibold text-slate-400">{items.length}</span>
+      </div>
+      <div className="rounded-xl bg-white border border-slate-200 divide-y divide-slate-100 px-2">
+        {items.slice(0,6).map((c) => choreItem(c))}
+      </div>
+    </div>
+  );
   return (
     <div className="px-4 pt-1 pb-2">
       <Collapsible storeKey="famcal:collapse:chores" count={chores.length}
-        title={<span className="flex items-center gap-2">Chores
+        title={<span className="flex items-center gap-2 flex-wrap">Chores
           <span onClick={(e) => { e.stopPropagation(); onOpenAll(); }} className="text-teal-700 font-semibold normal-case tracking-normal">View all ›</span>
+          {layoutToggle}
         </span>}>
-        <div className="overflow-x-auto -mx-1 px-1">
-          <div className="flex gap-2.5 min-w-max items-start">
-            {cols.map(({ member, items, isMe }) => (
-              <div key={member.id} className="w-56 shrink-0 rounded-2xl bg-slate-100 p-2">
-                <div className="flex items-center gap-2 px-1 pb-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: member.color }} />
-                  <span className="flex-1 font-bold text-xs text-slate-800">{member.name}{isMe ? " · me" : ""}</span>
-                  <span className="text-[11px] font-semibold text-slate-400">{items.length}</span>
-                </div>
-                <div className="rounded-xl bg-white border border-slate-200 divide-y divide-slate-100 px-2">
-                  {items.slice(0,6).map((c) => choreItem(c))}
-                </div>
-              </div>
-            ))}
+        {layout === "columns" ? (
+          <div className="overflow-x-auto -mx-1 px-1">
+            <div className="flex gap-2.5 min-w-max items-start">
+              {cols.map((c) => personBlock(c))}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div>{cols.map((c) => personBlock(c))}</div>
+        )}
       </Collapsible>
     </div>
   );
