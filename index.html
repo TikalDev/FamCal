@@ -180,20 +180,90 @@ function eventsMapForRange(events, startK, endK) {
   return map;
 }
 
-// ---------- chore rotation ----------
-const periodOf = (chore, dateK = todayKey()) =>
-  chore.cadence === "daily"
-    ? diffDays("2020-01-01", dateK)
-    : Math.floor(diffDays("2020-01-05", dateK) / 7); // 2020-01-05 = a Sunday
+// ---------- chore scheduling & rotation ----------
+// A chore's schedule:
+//   cadence: "daily" | "weekly" | "biweekly" | "monthly"
+//   weekdays: array of 0-6 (Sun..Sat) for weekly/biweekly (defaults to whole week if empty)
+//   monthDay: 1-31 for monthly
+// "period" = a stable occurrence counter used both for done-tracking and rotation.
+const ANCHOR = "2020-01-05"; // a Sunday, reference point
+
+// does this chore occur on dateK?
+const occursOnChore = (chore, dateK) => {
+  const d = parseKey(dateK);
+  const cad = chore.cadence || "weekly";
+  if (cad === "daily") return true;
+  if (cad === "monthly") {
+    const md = chore.monthDay || 1;
+    return d.getDate() === md;
+  }
+  // weekly / biweekly: must match a selected weekday
+  const wds = (chore.weekdays && chore.weekdays.length) ? chore.weekdays : [0,1,2,3,4,5,6];
+  if (!wds.includes(d.getDay())) return false;
+  if (cad === "biweekly") {
+    // alternate weeks based on week number from anchor
+    const wk = Math.floor(diffDays(ANCHOR, dateK) / 7);
+    return wk % 2 === 0;
+  }
+  return true; // weekly
+};
+
+// occurrence index: how many times this chore has come due, up to & including dateK.
+const periodOf = (chore, dateK = todayKey()) => {
+  const cad = chore.cadence || "weekly";
+  if (cad === "daily") return diffDays("2020-01-01", dateK);
+  if (cad === "monthly") {
+    const d = parseKey(dateK);
+    return d.getFullYear() * 12 + d.getMonth(); // month index
+  }
+  // weekly/biweekly: count matching occurrence-days from anchor up to dateK, computed directly
+  const wds = (chore.weekdays && chore.weekdays.length) ? chore.weekdays : [0,1,2,3,4,5,6];
+  const total = diffDays(ANCHOR, dateK);
+  if (total < 0) return 0;
+  const anchorDow = parseKey(ANCHOR).getDay(); // Sunday = 0
+  const fullWeeks = Math.floor((total + 1) / 7);
+  const remDays = (total + 1) % 7;             // leftover days in the partial week
+  if (cad === "weekly") {
+    let count = fullWeeks * wds.length;
+    for (let i = 0; i < remDays; i++) { if (wds.includes((anchorDow + i) % 7)) count++; }
+    return count;
+  }
+  // biweekly: only weeks where weekNumber is even count
+  let count = 0;
+  const evenFullWeeks = Math.ceil(fullWeeks / 2); // weeks 0,2,4... among 0..fullWeeks-1
+  count = evenFullWeeks * wds.length;
+  // partial (current) week counts only if its week number is even
+  const curWeek = Math.floor(total / 7);
+  if (curWeek % 2 === 0) {
+    for (let i = 0; i < remDays; i++) { if (wds.includes((anchorDow + i) % 7)) count++; }
+  }
+  return count;
+};
+
 const whoseTurn = (chore, dateK = todayKey()) => {
   const order = chore.memberIds || [];
   if (!order.length) return null;
   const p = periodOf(chore, dateK);
-  const offset = (((p - (chore.anchorPeriod || 0)) % order.length) + order.length) % order.length;
+  // Before the first scheduled occurrence, keep the first selected person up.
+  // Each actual occurrence then advances the rotation by exactly one person.
+  const elapsed = Math.max(0, p - (chore.anchorPeriod || 0));
+  const offset = elapsed % order.length;
   return order[((chore.anchorIndex || 0) + offset) % order.length];
 };
 const choreDoneThisPeriod = (chore) => chore.lastDone && chore.lastDone.period === periodOf(chore);
-const cadenceLabel = (c) => (c === "daily" ? "Every day" : "Every week");
+
+const WEEKDAY_FULL = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const cadenceLabel = (c) => {
+  const cad = c.cadence || (typeof c === "string" ? c : "weekly");
+  // support being called with a chore object or a plain cadence string (legacy)
+  if (typeof c === "string") return c === "daily" ? "Every day" : "Every week";
+  if (cad === "daily") return "Every day";
+  if (cad === "monthly") return `Monthly on the ${ordinal(c.monthDay || 1)}`;
+  const wds = (c.weekdays && c.weekdays.length) ? c.weekdays : null;
+  const dayList = wds ? wds.slice().sort().map((n) => WEEKDAYS[n]).join(", ") : "every day";
+  return `${cad === "biweekly" ? "Every other week" : "Weekly"} · ${dayList}`;
+};
+
 
 // ---------- shopping / favorites ----------
 const money = (n) => (n == null || n === "" ? "" : `$${Number(n).toFixed(2)}`);
@@ -223,8 +293,8 @@ const rowToEvent = (r) => ({ id: r.id, title: r.title, date: r.date, endDate: r.
 const eventToRow = (e) => ({ id: e.id, title: e.title, date: e.date, end_date: e.endDate || null, time: e.time || null, notes: e.notes || null, phone: e.phone || null, location: e.location || null, recur: e.recur || "none", member_ids: e.memberIds, done_on: e.doneOn || [], cleared: !!e.cleared, ts: e.ts, by_member: e.by || null });
 const rowToTask = (r) => ({ id: r.id, title: r.title, dueDate: r.due_date || "", notes: r.notes || "", done: !!r.done, cleared: !!r.cleared, memberIds: r.member_ids || [], ts: r.ts, by: r.by_member });
 const taskToRow = (t) => ({ id: t.id, title: t.title, due_date: t.dueDate || null, notes: t.notes || null, done: !!t.done, cleared: !!t.cleared, member_ids: t.memberIds, ts: t.ts, by_member: t.by || null });
-const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "weekly", memberIds: r.member_ids || [], anchorPeriod: r.anchor_period || 0, anchorIndex: r.anchor_index || 0, lastDone: r.last_done || null, clearedPeriod: r.cleared_period ?? null, ts: r.ts, by: r.by_member });
-const choreToRow = (c) => ({ id: c.id, title: c.title, cadence: c.cadence, member_ids: c.memberIds, anchor_period: c.anchorPeriod || 0, anchor_index: c.anchorIndex || 0, last_done: c.lastDone || null, cleared_period: c.clearedPeriod ?? null, ts: c.ts, by_member: c.by || null });
+const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "weekly", weekdays: r.weekdays || [], monthDay: r.month_day || null, memberIds: r.member_ids || [], anchorPeriod: r.anchor_period || 0, anchorIndex: r.anchor_index || 0, lastDone: r.last_done || null, clearedPeriod: r.cleared_period ?? null, ts: r.ts, by: r.by_member });
+const choreToRow = (c) => ({ id: c.id, title: c.title, cadence: c.cadence, weekdays: c.weekdays || [], month_day: c.monthDay || null, member_ids: c.memberIds, anchor_period: c.anchorPeriod || 0, anchor_index: c.anchorIndex || 0, last_done: c.lastDone || null, cleared_period: c.clearedPeriod ?? null, ts: c.ts, by_member: c.by || null });
 const rowToCleared = (r) => ({ id: r.id, kind: r.kind, refId: r.ref_id || null, title: r.title, detail: r.detail || "", memberIds: r.member_ids || [], clearedAt: r.cleared_at, by: r.by_member || null });
 const clearedToRow = (h) => ({ id: h.id, kind: h.kind, ref_id: h.refId || null, title: h.title, detail: h.detail || null, member_ids: h.memberIds || [], cleared_at: h.clearedAt, by_member: h.by || null });
 const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, favId: r.fav_id || null, checked: !!r.checked, lastStore: r.last_store || "", lastPrice: r.last_price == null ? "" : r.last_price, ts: r.ts, by: r.by_member });
@@ -482,8 +552,9 @@ function App() {
   const saveChore = async (cIn) => {
     setSyncing(true);
     const isNew = !chores.some((c) => c.id === cIn.id);
+    const firstPeriod = periodOf(cIn) + (occursOnChore(cIn, todayKey()) ? 0 : 1);
     const c = isNew
-      ? { ...cIn, anchorPeriod: periodOf(cIn), anchorIndex: 0, lastDone: null, ts: Date.now(), by: me || null }
+      ? { ...cIn, anchorPeriod: firstPeriod, anchorIndex: 0, lastDone: null, ts: Date.now(), by: me || null }
       : { ...cIn, ts: Date.now(), by: me || cIn.by || null };
     await sb.from("chores").upsert(choreToRow(c));
     await fetchAll();
@@ -581,7 +652,7 @@ function App() {
     if (!doneThis) return;
     const turnMember = (fam?.members || []).find((m) => m.id === whoseTurn(c));
     setSyncing(true);
-    await logCleared("chore", c.id, c.title, turnMember ? `${turnMember.name}'s turn` : cadenceLabel(c.cadence), c.memberIds);
+    await logCleared("chore", c.id, c.title, turnMember ? `${turnMember.name}'s turn` : cadenceLabel(c), c.memberIds);
     await sb.from("chores").update({ cleared_period: p }).eq("id", id);
     await fetchAll(); setSyncing(false);
   };
@@ -2044,15 +2115,40 @@ function ChoresView({ chores, memberById, members, me, onComplete, onClear, onEd
 }
 
 function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
-  const [c, setC] = useState(initial);
+  const defaultWeekday = new Date().getDay();
+  const [c, setC] = useState({
+    cadence: "weekly",
+    weekdays: [defaultWeekday],
+    monthDay: new Date().getDate(),
+    ...initial,
+  });
   const set = (k,v) => setC((x) => ({ ...x, [k]: v }));
   const togglePerson = (id) => setC((x) => ({
     ...x,
     memberIds: x.memberIds.includes(id) ? x.memberIds.filter((y) => y !== id) : [...x.memberIds, id],
   }));
-  const ok = c.title.trim() && c.memberIds.length >= 1;
+  const toggleWeekday = (day) => setC((x) => {
+    const current = x.weekdays || [];
+    const weekdays = current.includes(day) ? current.filter((d) => d !== day) : [...current, day].sort((a,b) => a-b);
+    return { ...x, weekdays };
+  });
+
+  const needsWeekday = c.cadence === "weekly" || c.cadence === "biweekly";
+  const scheduleOk = !needsWeekday || (c.weekdays || []).length > 0;
+  const ok = c.title.trim() && c.memberIds.length >= 1 && scheduleOk;
   const order = c.memberIds.map((id) => members.find((m) => m.id === id)).filter(Boolean);
   const solo = order.length === 1;
+
+  const save = () => {
+    const normalized = {
+      ...c,
+      title: c.title.trim(),
+      weekdays: needsWeekday ? (c.weekdays || []) : [],
+      monthDay: c.cadence === "monthly" ? Math.min(31, Math.max(1, Number(c.monthDay) || 1)) : null,
+    };
+    onSave(normalized);
+  };
+
   return (
     <Sheet onClose={onClose} title={isNew ? "New chore" : "Edit chore"}>
       <div className="space-y-3">
@@ -2060,23 +2156,52 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
           <input autoFocus value={c.title} onChange={(e) => set("title", e.target.value)} placeholder="Dishes, garbage, walk the dog…"
             className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
         </Field>
-        <Field label={solo ? "How often" : "How often does it change hands"}>
+
+        <Field label="How often">
           <div className="grid grid-cols-2 gap-2">
-            {[["weekly","Every week"],["daily","Every day"]].map(([v,label]) => (
-              <button key={v} onClick={() => set("cadence", v)}
+            {[["daily","Daily"],["weekly","Weekly"],["biweekly","Every 2 weeks"],["monthly","Monthly"]].map(([v,label]) => (
+              <button key={v} type="button" onClick={() => set("cadence", v)}
                 className={`py-2.5 rounded-xl text-xs font-semibold border ${c.cadence === v ? "border-teal-700 bg-teal-50 text-teal-800" : "border-slate-200 bg-white text-slate-500"}`}>
                 {label}
               </button>
             ))}
           </div>
         </Field>
-        <Field label="Who does it — tap one person, or several to rotate turns">
+
+        {needsWeekday && (
+          <Field label={c.cadence === "biweekly" ? "Which day every 2 weeks?" : "Which day each week?"}>
+            <div className="grid grid-cols-7 gap-1.5">
+              {WEEKDAYS.map((label, day) => {
+                const selected = (c.weekdays || []).includes(day);
+                return (
+                  <button key={day} type="button" onClick={() => toggleWeekday(day)}
+                    className={`py-2 rounded-lg text-[11px] font-bold border ${selected ? "border-teal-700 bg-teal-700 text-white" : "border-slate-200 bg-white text-slate-500"}`}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {!scheduleOk && <p className="text-[11px] text-red-500 pt-1">Pick at least one day.</p>}
+            <p className="text-[11px] text-slate-400 pt-1">Each selected occurrence moves to the next person in the rotation.</p>
+          </Field>
+        )}
+
+        {c.cadence === "monthly" && (
+          <Field label="Day of the month">
+            <input type="number" min="1" max="31" value={c.monthDay || 1}
+              onChange={(e) => set("monthDay", e.target.value)}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+            <p className="text-[11px] text-slate-400 pt-1">For shorter months, dates such as the 31st will not occur.</p>
+          </Field>
+        )}
+
+        <Field label="Who does it — tap people in the order they should rotate">
           <div className="flex flex-wrap gap-2">
             {members.map((m) => {
               const pos = c.memberIds.indexOf(m.id);
               const on = pos >= 0;
               return (
-                <button key={m.id} onClick={() => togglePerson(m.id)}
+                <button key={m.id} type="button" onClick={() => togglePerson(m.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border ${on ? "border-slate-700 bg-white shadow-sm" : "border-transparent bg-slate-100 text-slate-600"}`}>
                   <span className="w-2.5 h-2.5 rounded-full" style={{ background: m.color }} />
                   {m.name}{on ? ` · ${pos + 1}` : ""}
@@ -2085,20 +2210,24 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
             })}
           </div>
           {c.memberIds.length < 1 && <p className="text-[11px] text-red-500 pt-1">Pick at least one person.</p>}
-          {solo && <p className="text-[11px] text-slate-400 pt-1">Just {order[0].name} — this stays their job, no rotation.</p>}
+          {solo && <p className="text-[11px] text-slate-400 pt-1">This stays assigned to {order[0].name}; there is no rotation.</p>}
         </Field>
+
         {order.length >= 2 && (
           <div className="rounded-xl bg-slate-100 p-3">
             <p className="text-[11px] font-semibold text-slate-500 pb-1">Turn order</p>
             <p className="text-sm text-slate-700">
               {order.map((m) => m.name).join(" → ")} <span className="text-slate-400">↻ back to {order[0].name}</span>
             </p>
-            {isNew && <p className="text-[11px] text-slate-400 pt-1">{order[0].name} is up first.</p>}
+            <p className="text-[11px] text-slate-400 pt-1">
+              {order[0].name} has the first scheduled occurrence. The next occurrence moves to {order[1].name}.
+            </p>
           </div>
         )}
+
         <div className="flex gap-2 pt-1">
-          {!isNew && <button onClick={() => onDelete(c.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
-          <button disabled={!ok} onClick={() => onSave({ ...c, title: c.title.trim() })}
+          {!isNew && <button type="button" onClick={() => onDelete(c.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
+          <button type="button" disabled={!ok} onClick={save}
             className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
             {isNew ? (solo ? "Add chore" : "Start rotation") : "Save changes"}
           </button>
