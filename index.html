@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.6.4";
+const APP_VERSION = "2.7.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -244,10 +244,7 @@ const whoseTurn = (chore, dateK = todayKey()) => {
   const order = chore.memberIds || [];
   if (!order.length) return null;
   const p = periodOf(chore, dateK);
-  // Before the first scheduled occurrence, keep the first selected person up.
-  // Each actual occurrence then advances the rotation by exactly one person.
-  const elapsed = Math.max(0, p - (chore.anchorPeriod || 0));
-  const offset = elapsed % order.length;
+  const offset = (((p - (chore.anchorPeriod || 0)) % order.length) + order.length) % order.length;
   return order[((chore.anchorIndex || 0) + offset) % order.length];
 };
 const choreDoneThisPeriod = (chore) => chore.lastDone && chore.lastDone.period === periodOf(chore);
@@ -552,9 +549,18 @@ function App() {
   const saveChore = async (cIn) => {
     setSyncing(true);
     const isNew = !chores.some((c) => c.id === cIn.id);
-    const firstPeriod = periodOf(cIn) + (occursOnChore(cIn, todayKey()) ? 0 : 1);
+    // anchor rotation to the chore's FIRST upcoming occurrence, so person #1 gets the first turn
+    const firstOccurrencePeriod = (chore) => {
+      const tk = todayKey();
+      if (occursOnChore(chore, tk)) return periodOf(chore, tk);
+      for (let i = 1; i <= 366; i++) {
+        const k = toKey(addDays(new Date(), i));
+        if (occursOnChore(chore, k)) return periodOf(chore, k);
+      }
+      return periodOf(chore, tk);
+    };
     const c = isNew
-      ? { ...cIn, anchorPeriod: firstPeriod, anchorIndex: 0, lastDone: null, ts: Date.now(), by: me || null }
+      ? { ...cIn, anchorPeriod: firstOccurrencePeriod(cIn), anchorIndex: 0, lastDone: null, ts: Date.now(), by: me || null }
       : { ...cIn, ts: Date.now(), by: me || cIn.by || null };
     await sb.from("chores").upsert(choreToRow(c));
     await fetchAll();
@@ -1048,7 +1054,7 @@ function App() {
         <ChoreEditor
           key={choreEditing === "new" ? "new" : choreEditing.id}
           initial={choreEditing === "new"
-            ? { id: uid(), title: "", cadence: "weekly", memberIds: fam.members.slice(0, Math.min(2, fam.members.length)).map((m) => m.id) }
+            ? { id: uid(), title: "", cadence: "weekly", weekdays: [new Date().getDay()], monthDay: new Date().getDate(), memberIds: fam.members.slice(0, Math.min(2, fam.members.length)).map((m) => m.id) }
             : choreEditing}
           isNew={choreEditing === "new"}
           members={fam.members}
@@ -1613,7 +1619,7 @@ function ChoreSummary({ chores, memberById, members, me, layout, onSetLayout, on
         <button onClick={() => onEdit(c)} className="flex-1 min-w-0 text-left">
           <span className={`block text-sm font-semibold truncate ${done ? "line-through text-slate-400" : "text-slate-800"}`}>{c.title}</span>
           <span className="block text-[11px] text-slate-400">
-            {done ? `Done this ${c.cadence === "daily" ? "day" : "week"} ✓` : (solo ? cadenceLabel(c.cadence) : `${turn ? turn.name + "'s turn" : "—"}`)}
+            {done ? `Done this ${c.cadence === "daily" ? "day" : "week"} ✓` : (solo ? cadenceLabel(c) : `${turn ? turn.name + "'s turn" : "—"}`)}
           </span>
         </button>
         {done && (
@@ -1935,7 +1941,7 @@ function ChoresView({ chores, memberById, members, me, onComplete, onClear, onEd
             ) : (
               <span className="block text-xs pt-0.5">
                 <span className="font-bold" style={{ color: overdue ? "#dc2626" : (turn||{}).color }}>{turn ? (solo ? turn.name : `${turn.name}'s turn`) : "—"}</span>
-                <span className={overdue ? "text-red-500 font-semibold" : "text-slate-400"}> · {overdue ? "overdue" : cadenceLabel(c.cadence)}</span>
+                <span className={overdue ? "text-red-500 font-semibold" : "text-slate-400"}> · {overdue ? "overdue" : cadenceLabel(c)}</span>
               </span>
             )}
             {!solo && (
@@ -2115,40 +2121,16 @@ function ChoresView({ chores, memberById, members, me, onComplete, onClear, onEd
 }
 
 function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
-  const defaultWeekday = new Date().getDay();
-  const [c, setC] = useState({
-    cadence: "weekly",
-    weekdays: [defaultWeekday],
-    monthDay: new Date().getDate(),
-    ...initial,
-  });
+  const [c, setC] = useState(initial);
   const set = (k,v) => setC((x) => ({ ...x, [k]: v }));
   const togglePerson = (id) => setC((x) => ({
     ...x,
     memberIds: x.memberIds.includes(id) ? x.memberIds.filter((y) => y !== id) : [...x.memberIds, id],
   }));
-  const toggleWeekday = (day) => setC((x) => {
-    const current = x.weekdays || [];
-    const weekdays = current.includes(day) ? current.filter((d) => d !== day) : [...current, day].sort((a,b) => a-b);
-    return { ...x, weekdays };
-  });
-
-  const needsWeekday = c.cadence === "weekly" || c.cadence === "biweekly";
-  const scheduleOk = !needsWeekday || (c.weekdays || []).length > 0;
-  const ok = c.title.trim() && c.memberIds.length >= 1 && scheduleOk;
+  const needsDay = c.cadence === "weekly" || c.cadence === "biweekly";
+  const ok = c.title.trim() && c.memberIds.length >= 1 && (!needsDay || (c.weekdays || []).length >= 1);
   const order = c.memberIds.map((id) => members.find((m) => m.id === id)).filter(Boolean);
   const solo = order.length === 1;
-
-  const save = () => {
-    const normalized = {
-      ...c,
-      title: c.title.trim(),
-      weekdays: needsWeekday ? (c.weekdays || []) : [],
-      monthDay: c.cadence === "monthly" ? Math.min(31, Math.max(1, Number(c.monthDay) || 1)) : null,
-    };
-    onSave(normalized);
-  };
-
   return (
     <Sheet onClose={onClose} title={isNew ? "New chore" : "Edit chore"}>
       <div className="space-y-3">
@@ -2156,11 +2138,10 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
           <input autoFocus value={c.title} onChange={(e) => set("title", e.target.value)} placeholder="Dishes, garbage, walk the dog…"
             className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
         </Field>
-
-        <Field label="How often">
+        <Field label={solo ? "How often" : "How often does it change hands"}>
           <div className="grid grid-cols-2 gap-2">
-            {[["daily","Daily"],["weekly","Weekly"],["biweekly","Every 2 weeks"],["monthly","Monthly"]].map(([v,label]) => (
-              <button key={v} type="button" onClick={() => set("cadence", v)}
+            {[["daily","Every day"],["weekly","Weekly"],["biweekly","Every other week"],["monthly","Monthly"]].map(([v,label]) => (
+              <button key={v} onClick={() => set("cadence", v)}
                 className={`py-2.5 rounded-xl text-xs font-semibold border ${c.cadence === v ? "border-teal-700 bg-teal-50 text-teal-800" : "border-slate-200 bg-white text-slate-500"}`}>
                 {label}
               </button>
@@ -2168,40 +2149,44 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
           </div>
         </Field>
 
-        {needsWeekday && (
-          <Field label={c.cadence === "biweekly" ? "Which day every 2 weeks?" : "Which day each week?"}>
-            <div className="grid grid-cols-7 gap-1.5">
-              {WEEKDAYS.map((label, day) => {
-                const selected = (c.weekdays || []).includes(day);
+        {(c.cadence === "weekly" || c.cadence === "biweekly") && (
+          <Field label="On which day(s)">
+            <div className="flex flex-wrap gap-1.5">
+              {WEEKDAYS.map((wd, i) => {
+                const on = (c.weekdays || []).includes(i);
                 return (
-                  <button key={day} type="button" onClick={() => toggleWeekday(day)}
-                    className={`py-2 rounded-lg text-[11px] font-bold border ${selected ? "border-teal-700 bg-teal-700 text-white" : "border-slate-200 bg-white text-slate-500"}`}>
-                    {label}
+                  <button key={i} onClick={() => setC((x) => {
+                    const cur = x.weekdays || [];
+                    return { ...x, weekdays: cur.includes(i) ? cur.filter((d) => d !== i) : [...cur, i] };
+                  })}
+                    className={`w-11 py-2 rounded-xl text-xs font-semibold border ${on ? "border-teal-700 bg-teal-50 text-teal-800" : "border-slate-200 bg-white text-slate-500"}`}>
+                    {wd}
                   </button>
                 );
               })}
             </div>
-            {!scheduleOk && <p className="text-[11px] text-red-500 pt-1">Pick at least one day.</p>}
-            <p className="text-[11px] text-slate-400 pt-1">Each selected occurrence moves to the next person in the rotation.</p>
+            {(c.weekdays || []).length === 0 && <p className="text-[11px] text-red-500 pt-1">Pick at least one day.</p>}
           </Field>
         )}
 
         {c.cadence === "monthly" && (
           <Field label="Day of the month">
-            <input type="number" min="1" max="31" value={c.monthDay || 1}
-              onChange={(e) => set("monthDay", e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
-            <p className="text-[11px] text-slate-400 pt-1">For shorter months, dates such as the 31st will not occur.</p>
+            <select value={c.monthDay || 1} onChange={(e) => set("monthDay", Number(e.target.value))}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600">
+              {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                <option key={d} value={d}>{ordinal(d)}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-400 pt-1">Months without this day are skipped (e.g. the 31st).</p>
           </Field>
         )}
-
-        <Field label="Who does it — tap people in the order they should rotate">
+        <Field label="Who does it — tap one person, or several to rotate turns">
           <div className="flex flex-wrap gap-2">
             {members.map((m) => {
               const pos = c.memberIds.indexOf(m.id);
               const on = pos >= 0;
               return (
-                <button key={m.id} type="button" onClick={() => togglePerson(m.id)}
+                <button key={m.id} onClick={() => togglePerson(m.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border ${on ? "border-slate-700 bg-white shadow-sm" : "border-transparent bg-slate-100 text-slate-600"}`}>
                   <span className="w-2.5 h-2.5 rounded-full" style={{ background: m.color }} />
                   {m.name}{on ? ` · ${pos + 1}` : ""}
@@ -2210,24 +2195,20 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
             })}
           </div>
           {c.memberIds.length < 1 && <p className="text-[11px] text-red-500 pt-1">Pick at least one person.</p>}
-          {solo && <p className="text-[11px] text-slate-400 pt-1">This stays assigned to {order[0].name}; there is no rotation.</p>}
+          {solo && <p className="text-[11px] text-slate-400 pt-1">Just {order[0].name} — this stays their job, no rotation.</p>}
         </Field>
-
         {order.length >= 2 && (
           <div className="rounded-xl bg-slate-100 p-3">
             <p className="text-[11px] font-semibold text-slate-500 pb-1">Turn order</p>
             <p className="text-sm text-slate-700">
               {order.map((m) => m.name).join(" → ")} <span className="text-slate-400">↻ back to {order[0].name}</span>
             </p>
-            <p className="text-[11px] text-slate-400 pt-1">
-              {order[0].name} has the first scheduled occurrence. The next occurrence moves to {order[1].name}.
-            </p>
+            {isNew && <p className="text-[11px] text-slate-400 pt-1">{order[0].name} is up first.</p>}
           </div>
         )}
-
         <div className="flex gap-2 pt-1">
-          {!isNew && <button type="button" onClick={() => onDelete(c.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
-          <button type="button" disabled={!ok} onClick={save}
+          {!isNew && <button onClick={() => onDelete(c.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
+          <button disabled={!ok} onClick={() => onSave({ ...c, title: c.title.trim() })}
             className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
             {isNew ? (solo ? "Add chore" : "Start rotation") : "Save changes"}
           </button>
