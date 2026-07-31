@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.7.0";
+const APP_VERSION = "2.8.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -298,6 +298,8 @@ const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price:
 const shopToRow = (s) => ({ id: s.id, name: s.name, store: s.store || null, price: (s.price === "" || s.price == null) ? null : Number(s.price), fav_id: s.favId || null, checked: !!s.checked, last_store: s.lastStore || null, last_price: (s.lastPrice === "" || s.lastPrice == null) ? null : Number(s.lastPrice), ts: s.ts, by_member: s.by || null });
 const rowToFav = (r) => ({ id: r.id, name: r.name, history: r.history || [] });
 const favToRow = (f) => ({ id: f.id, name: f.name, history: f.history || [] });
+const rowToIdea = (r) => ({ id: r.id, title: r.title, description: r.description || "", memberIds: r.member_ids || [], status: r.status || "active", historyReason: r.history_reason || null, ts: r.ts, by: r.by_member });
+const ideaToRow = (i) => ({ id: i.id, title: i.title, description: i.description || null, member_ids: i.memberIds || [], status: i.status || "active", history_reason: i.historyReason || null, ts: i.ts, by_member: i.by || null });
 const rowToPurchase = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, date: r.date, by: r.by_member || null, favId: r.fav_id || null });
 const purchaseToRow = (p) => ({ id: p.id, name: p.name, store: p.store || null, price: (p.price === "" || p.price == null) ? null : Number(p.price), date: p.date, by_member: p.by || null, fav_id: p.favId || null });
 
@@ -315,6 +317,7 @@ function App() {
   const [favorites, setFavorites] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [cleared, setCleared] = useState([]);   // cleared history (tasks/events/chores)
+  const [ideas, setIdeas] = useState([]);       // family ideas (active + history)
   const [privEvents, setPrivEvents] = useState(() => lsGet("famcal:private", []));
   const [me, setMe] = useState(() => lsGet("famcal:me", null));
   const [lastSeen, setLastSeen] = useState(() => lsGet("famcal:seen", null));
@@ -328,6 +331,8 @@ function App() {
   const [editing, setEditing] = useState(null);
   const [taskEditing, setTaskEditing] = useState(null);
   const [choreEditing, setChoreEditing] = useState(null);
+  const [ideaEditing, setIdeaEditing] = useState(null);      // "new" | idea object | null
+  const [ideaHistoryOpen, setIdeaHistoryOpen] = useState(false);
   const [shopEditing, setShopEditing] = useState(null);
   const [favManage, setFavManage] = useState(false);
   const [historyView, setHistoryView] = useState(false);
@@ -346,7 +351,7 @@ function App() {
   // ---- fetch everything ----
   const fetchAll = useCallback(async () => {
     try {
-      const [f, e, t, c, sh, fv, pu, cl] = await Promise.all([
+      const [f, e, t, c, sh, fv, pu, cl, id] = await Promise.all([
         sb.from("family").select("*").eq("id", 1).maybeSingle(),
         sb.from("events").select("*"),
         sb.from("tasks").select("*"),
@@ -355,8 +360,10 @@ function App() {
         sb.from("favorites").select("*"),
         sb.from("purchases").select("*"),
         sb.from("cleared_history").select("*"),
+        sb.from("ideas").select("*"),
       ]);
       if (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error || cl.error) throw (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error || cl.error);
+      // ideas is a newer table; if it errors (not created yet) just treat as empty rather than blocking the whole app
       setFam(f.data ? { name: f.data.name, members: f.data.members || [], passcode: f.data.passcode || null, adminPin: f.data.admin_pin || null } : null);
       setEvents((e.data || []).map(rowToEvent));
       setTasks((t.data || []).map(rowToTask));
@@ -365,6 +372,7 @@ function App() {
       setFavorites((fv.data || []).map(rowToFav));
       setPurchases((pu.data || []).map(rowToPurchase));
       setCleared((cl.data || []).map(rowToCleared));
+      setIdeas((id && !id.error ? (id.data || []) : []).map(rowToIdea));
       setOffline(false);
     } catch (err) {
       console.error("fetch failed", err);
@@ -497,6 +505,11 @@ function App() {
     await fetchAll();
     setSyncing(false);
     setEditing(null); setDetail(null);
+    // if this event came from an idea ("Let's do it"), retire that idea to history
+    if (evIn._fromIdeaId) {
+      await sb.from("ideas").update({ status: "history", history_reason: "made-event" }).eq("id", evIn._fromIdeaId);
+      fetchAll();
+    }
     // notify the family about a newly-added shared event
     if (isNewShared) {
       const meName = (fam?.members || []).find((m) => m.id === me)?.name || "Someone";
@@ -571,6 +584,46 @@ function App() {
       pushNotify("New chore", `${meName} set up a chore: "${c.title}"`);
     }
   };
+
+  // ---------- ideas ----------
+  const saveIdea = async (iIn) => {
+    setSyncing(true);
+    const isNew = !ideas.some((x) => x.id === iIn.id);
+    const i = { ...iIn, status: iIn.status || "active", ts: Date.now(), by: me || iIn.by || null };
+    await sb.from("ideas").upsert(ideaToRow(i));
+    await fetchAll();
+    setSyncing(false);
+    setIdeaEditing(null);
+    if (isNew) {
+      const meName = (fam?.members || []).find((m) => m.id === me)?.name || "Someone";
+      pushNotify("New idea", `${meName} added an idea: "${i.title}"`);
+    }
+  };
+  // "Let's do it" — hand the idea to the event editor; once the event saves,
+  // the idea is moved to history (reason: made into an event).
+  const promoteIdeaToEvent = (idea) => {
+    setEditing({
+      id: uid(), title: idea.title, notes: idea.description || "", date: todayKey(),
+      endDate: "", time: "", recur: "none", memberIds: idea.memberIds || [], visibility: "family",
+      _fromIdeaId: idea.id,
+    });
+  };
+  const moveIdeaToHistory = async (idea, reason) => {
+    setSyncing(true);
+    await sb.from("ideas").update({ status: "history", history_reason: reason }).eq("id", idea.id);
+    await fetchAll(); setSyncing(false);
+  };
+  const reAcceptIdea = async (id) => {
+    setSyncing(true);
+    await sb.from("ideas").update({ status: "active", history_reason: null }).eq("id", id);
+    await fetchAll(); setSyncing(false);
+  };
+  const deleteIdea = async (id) => {
+    setSyncing(true);
+    await sb.from("ideas").delete().eq("id", id);
+    await fetchAll(); setSyncing(false);
+  };
+
   const deleteChore = async (id) => {
     setSyncing(true);
     await sb.from("chores").delete().eq("id", id);
@@ -795,6 +848,8 @@ function App() {
   const doneTasks = activeTasks.filter((t) => t.done);
   // chores swiped away this period drop off until next period
   const activeChores = chores.filter((c) => !(c.clearedPeriod != null && c.clearedPeriod === periodOf(c)));
+  const activeIdeas = ideas.filter((i) => i.status !== "history").sort((a,b) => (b.ts||0) - (a.ts||0));
+  const historyIdeas = ideas.filter((i) => i.status === "history").sort((a,b) => (b.ts||0) - (a.ts||0));
 
   const newForMe = (me && lastSeen)
     ? [...allEvents, ...tasks].filter((it) => it.ts && it.ts > lastSeen && it.by && it.by !== me && peopleOf(it).includes(me))
@@ -811,6 +866,7 @@ function App() {
     : view === "tasks" ? "To-do list"
     : view === "chores" ? "Chore rotation"
     : view === "shop" ? "Shopping list"
+    : view === "ideas" ? "Family ideas"
     : "Family board";
 
   const openNew = (dayKey, memberId) => {
@@ -854,7 +910,7 @@ function App() {
       {/* section toggle (top level) */}
       <div className="px-4 pb-2 overflow-x-auto">
         <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold w-fit whitespace-nowrap">
-          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"]].map(([sec,label]) => {
+          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["ideas","Ideas"]].map(([sec,label]) => {
             const active = section === sec;
             const go = () => setView(sec === "calendar" ? (CALENDAR_VIEWS.includes(view) ? view : "month") : sec);
             return (
@@ -863,6 +919,9 @@ function App() {
                 {label}
                 {sec === "tasks" && openTasks.length > 0 && (
                   <span className="ml-1 px-1.5 py-0.5 rounded-full bg-teal-700 text-white text-[9px] align-middle">{openTasks.length}</span>
+                )}
+                {sec === "ideas" && activeIdeas.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-teal-700 text-white text-[9px] align-middle">{activeIdeas.length}</span>
                 )}
               </button>
             );
@@ -978,9 +1037,15 @@ function App() {
       {view === "board" && (
         <Board members={fam.members} allEvents={allEvents} onDetail={setDetail} onAdd={(mId) => openNew(tk, mId)} />
       )}
+      {view === "ideas" && (
+        <IdeasView ideas={activeIdeas} memberById={memberById} me={me}
+          onNew={() => setIdeaEditing("new")} onEdit={setIdeaEditing}
+          onLetsDoIt={promoteIdeaToEvent} onMaybe={(idea) => moveIdeaToHistory(idea, "maybe")}
+          onHistory={() => setIdeaHistoryOpen(true)} historyCount={historyIdeas.length} />
+      )}
 
       {/* floating add */}
-      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : view === "shop" ? setShopEditing("new") : setAddChoosing(true))}
+      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : view === "shop" ? setShopEditing("new") : view === "ideas" ? setIdeaEditing("new") : setAddChoosing(true))}
         className="fixed bottom-5 right-5 w-14 h-14 rounded-full bg-teal-700 text-white text-3xl leading-none shadow-lg active:scale-95 transition-transform"
         aria-label="Add">+</button>
 
@@ -1060,6 +1125,25 @@ function App() {
           members={fam.members}
           onSave={saveChore} onDelete={deleteChore} onClose={() => setChoreEditing(null)}
         />
+      )}
+
+      {/* idea editor */}
+      {ideaEditing && (
+        <IdeaEditor
+          key={ideaEditing === "new" ? "new" : ideaEditing.id}
+          initial={ideaEditing === "new"
+            ? { id: uid(), title: "", description: "", memberIds: me ? [me] : [], status: "active" }
+            : ideaEditing}
+          isNew={ideaEditing === "new"}
+          members={fam.members}
+          onSave={saveIdea} onDelete={deleteIdea} onClose={() => setIdeaEditing(null)}
+        />
+      )}
+
+      {/* idea history */}
+      {ideaHistoryOpen && (
+        <IdeaHistory ideas={historyIdeas} memberById={memberById}
+          onReAccept={reAcceptIdea} onDelete={deleteIdea} onClose={() => setIdeaHistoryOpen(false)} />
       )}
 
       {/* family settings */}
@@ -2214,6 +2298,138 @@ function ChoreEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
           </button>
         </div>
       </div>
+    </Sheet>
+  );
+}
+
+// ============================================================
+// IDEAS
+// ============================================================
+function IdeasView({ ideas, memberById, me, onNew, onEdit, onLetsDoIt, onMaybe, onHistory, historyCount }) {
+  return (
+    <div className="px-4 pb-28">
+      <div className="flex items-center justify-between pb-3">
+        <button onClick={onNew} className="px-4 py-2 rounded-full bg-teal-700 text-white text-sm font-semibold">+ New idea</button>
+        <button onClick={onHistory} className="text-xs font-semibold text-teal-700">History{historyCount ? ` (${historyCount})` : ""}</button>
+      </div>
+
+      {ideas.length === 0 ? (
+        <div className="text-center py-14">
+          <p className="text-4xl pb-2">💡</p>
+          <p className="text-sm text-slate-400">No ideas yet.<br />Tap "+ New idea" to jot down something the family might want to do — a trip, a dinner, a project.</p>
+        </div>
+      ) : (
+        <ul className="space-y-2.5">
+          {ideas.map((i) => {
+            const people = (i.memberIds || []).map((id) => memberById[id]).filter(Boolean);
+            return (
+              <li key={i.id} className="rounded-2xl bg-white border border-slate-200 p-4">
+                <button onClick={() => onEdit(i)} className="w-full text-left">
+                  <span className="block text-base font-bold text-slate-800">{i.title}</span>
+                  {i.description && <span className="block text-sm text-slate-500 pt-0.5 whitespace-pre-wrap">{i.description}</span>}
+                  {people.length > 0 && (
+                    <span className="flex items-center gap-1.5 pt-2 flex-wrap">
+                      {people.map((m) => (
+                        <span key={m.id} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-[11px] font-semibold text-slate-600">
+                          <span className="w-2 h-2 rounded-full" style={{ background: m.color }} />{m.name}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </button>
+                <div className="flex gap-2 pt-3">
+                  <button onClick={() => onLetsDoIt(i)} className="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-bold">Let's do it! 🎉</button>
+                  <button onClick={() => onMaybe(i)} className="flex-1 py-2.5 rounded-xl bg-slate-100 text-slate-600 text-sm font-semibold">Maybe next time</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="text-[11px] text-slate-400 text-center pt-4">"Let's do it!" turns an idea into an event (you add the date). "Maybe next time" tucks it into History, where you can bring it back or delete it later.</p>
+    </div>
+  );
+}
+
+function IdeaEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
+  const [i, setI] = useState(initial);
+  const set = (k,v) => setI((x) => ({ ...x, [k]: v }));
+  const togglePerson = (id) => setI((x) => ({
+    ...x,
+    memberIds: (x.memberIds || []).includes(id) ? x.memberIds.filter((y) => y !== id) : [...(x.memberIds || []), id],
+  }));
+  const ok = i.title.trim();
+  return (
+    <Sheet onClose={onClose} title={isNew ? "New idea" : "Edit idea"}>
+      <div className="space-y-3">
+        <Field label="Idea">
+          <input autoFocus value={i.title} onChange={(e) => set("title", e.target.value)} placeholder="Weekend camping trip, pizza night, repaint the deck…"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+        </Field>
+        <Field label="Details (optional)">
+          <textarea value={i.description} onChange={(e) => set("description", e.target.value)} rows={4} placeholder="Anything worth remembering about the idea…"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600 resize-none" />
+        </Field>
+        <Field label="Whose idea is it? (tap one or more)">
+          <div className="flex flex-wrap gap-2">
+            {members.map((m) => {
+              const on = (i.memberIds || []).includes(m.id);
+              return (
+                <button key={m.id} onClick={() => togglePerson(m.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border ${on ? "border-slate-700 bg-white shadow-sm" : "border-transparent bg-slate-100 text-slate-600"}`}>
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: m.color }} />
+                  {m.name}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+        <div className="flex gap-2 pt-1">
+          {!isNew && <button onClick={() => onDelete(i.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
+          <button disabled={!ok} onClick={() => onSave({ ...i, title: i.title.trim() })}
+            className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
+            {isNew ? "Add idea" : "Save changes"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function IdeaHistory({ ideas, memberById, onReAccept, onDelete, onClose }) {
+  return (
+    <Sheet onClose={onClose} title="Idea history">
+      {ideas.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">No past ideas yet.<br />Ideas you turn into events or set aside show up here.</p>
+      ) : (
+        <ul className="space-y-2">
+          {ideas.map((i) => {
+            const people = (i.memberIds || []).map((id) => memberById[id]).filter(Boolean);
+            const reason = i.historyReason === "made-event" ? "✓ became an event" : "set aside";
+            return (
+              <li key={i.id} className="rounded-2xl bg-white border border-slate-200 p-3.5">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-bold text-slate-800">{i.title}</span>
+                    {i.description && <span className="block text-[12px] text-slate-500 pt-0.5 line-clamp-2 whitespace-pre-wrap">{i.description}</span>}
+                    <span className="flex items-center gap-1.5 pt-1.5 flex-wrap">
+                      <span className={`text-[10px] font-bold ${i.historyReason === "made-event" ? "text-emerald-600" : "text-slate-400"}`}>{reason}</span>
+                      {people.map((m) => (
+                        <span key={m.id} className="w-3.5 h-3.5 rounded-full ring-2 ring-white" style={{ background: m.color }} title={m.name} />
+                      ))}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex gap-2 pt-3">
+                  <button onClick={() => onReAccept(i.id)} className="flex-1 py-2 rounded-xl bg-teal-50 border border-teal-600 text-teal-800 text-xs font-bold">Bring back</button>
+                  <button onClick={() => { if (confirm(`Delete "${i.title}" from history for good?`)) onDelete(i.id); }}
+                    className="px-4 py-2 rounded-xl bg-red-50 text-red-600 text-xs font-semibold">Delete</button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </Sheet>
   );
 }
