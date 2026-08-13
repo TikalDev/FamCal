@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.8.0";
+const APP_VERSION = "2.8.2";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -781,14 +781,21 @@ function App() {
     await fetchAll(); setSyncing(false);
   };
   const readdFromHistory = async (p) => {
-    if (shop.some((s) => s.name.toLowerCase() === p.name.toLowerCase())) return;
+    // already on the list? don't create a duplicate — but say so instead of doing nothing silently
+    if (shop.some((s) => s.name.toLowerCase() === p.name.toLowerCase())) {
+      alert(`"${p.name}" is already on your shopping list.`);
+      return;
+    }
     const fav = favorites.find((f) => f.name.toLowerCase() === p.name.toLowerCase());
     await sb.from("shop").insert(shopToRow({
       id: uid(), name: p.name, store: "", price: "",
       favId: fav ? fav.id : null, lastStore: p.store || "", lastPrice: p.price ?? "",
       checked: false, ts: Date.now(), by: me || null,
     }));
-    fetchAll();
+    // moved back onto the active list, so remove it from history —
+    // it returns to history when it's bought & cleared again
+    await sb.from("purchases").delete().eq("id", p.id);
+    await fetchAll();
   };
 
   // ----- favorites -----
