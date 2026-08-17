@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.12.0";
+const APP_VERSION = "2.13.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -346,6 +346,7 @@ function App() {
   const [recipeEditing, setRecipeEditing] = useState(null);  // "new" | recipe | null
   const [mealEditing, setMealEditing] = useState(null);      // {date, slot?} for new | meal | null
   const [menuView, setMenuView] = useState("planner");       // "planner" | "recipes"
+  const [addToWeekRecipe, setAddToWeekRecipe] = useState(null); // recipe being placed on the plan
   const [shopEditing, setShopEditing] = useState(null);
   const [favManage, setFavManage] = useState(false);
   const [historyView, setHistoryView] = useState(false);
@@ -703,6 +704,14 @@ function App() {
     setSyncing(true);
     await sb.from("meal_plan").delete().eq("id", id);
     await fetchAll(); setSyncing(false); setMealEditing(null);
+  };
+  // place a saved recipe onto the weekly plan (chosen day + meal slot)
+  const planRecipe = async (recipe, date, slot) => {
+    setSyncing(true);
+    await sb.from("meal_plan").upsert(mealToRow({
+      id: uid(), date, slot, title: "", recipeId: recipe.id, ingredients: [], ts: Date.now(), by: me || null,
+    }));
+    await fetchAll(); setSyncing(false); setAddToWeekRecipe(null);
   };
   // send a recipe's ingredients to the shopping list (only items not already there)
   const sendIngredientsToShop = async (ingredients) => {
@@ -1157,7 +1166,7 @@ function App() {
           meals={meals} recipes={recipes} memberById={memberById}
           onNewMeal={(preset) => setMealEditing(preset || "new")} onEditMeal={setMealEditing}
           onNewRecipe={() => setRecipeEditing("new")} onEditRecipe={setRecipeEditing}
-          onSendToShop={sendIngredientsToShop} />
+          onSendToShop={sendIngredientsToShop} onAddToWeek={setAddToWeekRecipe} />
       )}
 
       {/* floating add */}
@@ -1277,7 +1286,11 @@ function App() {
         />
       )}
 
-      {/* meal-plan entry editor */}
+      {/* add-recipe-to-week picker */}
+      {addToWeekRecipe && (
+        <AddToWeek recipe={addToWeekRecipe} onPlan={planRecipe} onClose={() => setAddToWeekRecipe(null)} />
+      )}
+
       {mealEditing && (
         <MealEditor
           key={mealEditing === "new" || !mealEditing.id ? "new" : mealEditing.id}
@@ -2608,7 +2621,49 @@ function IdeaHistory({ ideas, memberById, onReAccept, onDelete, onClose }) {
 // ============================================================
 // MENU (meal planner + recipe collection)
 // ============================================================
-function MenuView({ menuView, setMenuView, meals, recipes, memberById, onNewMeal, onEditMeal, onNewRecipe, onEditRecipe, onSendToShop }) {
+// Picker: place a saved recipe onto a day + meal slot in the week.
+function AddToWeek({ recipe, onPlan, onClose }) {
+  const days = Array.from({ length: 7 }, (_, i) => toKey(addDays(new Date(), i)));
+  const SLOTS = ["Breakfast", "Lunch", "Dinner", "Snack"];
+  const [date, setDate] = useState(days[0]);
+  const [slot, setSlot] = useState("Dinner");
+  return (
+    <Sheet onClose={onClose} title={`Add "${recipe.title}" to the week`}>
+      <div className="space-y-3">
+        <Field label="Which day?">
+          <div className="grid grid-cols-2 gap-2">
+            {days.map((d) => {
+              const dd = parseKey(d);
+              const on = d === date;
+              return (
+                <button key={d} onClick={() => setDate(d)}
+                  className={`px-3 py-2 rounded-xl text-sm font-semibold border text-left ${on ? "border-teal-700 bg-teal-50 text-teal-800" : "border-slate-200 bg-white text-slate-600"}`}>
+                  {d === todayKey() ? "Today" : `${WEEKDAYS[dd.getDay()]} ${ordinal(dd.getDate())}`}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+        <Field label="Which meal?">
+          <div className="flex flex-wrap gap-2">
+            {SLOTS.map((s) => (
+              <button key={s} onClick={() => setSlot(s)}
+                className={`px-4 py-2 rounded-full text-xs font-semibold border ${slot === s ? "border-teal-700 bg-white shadow-sm text-slate-800" : "border-transparent bg-slate-100 text-slate-600"}`}>
+                {s}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <button onClick={() => onPlan(recipe, date, slot)}
+          className="w-full py-3 rounded-xl bg-teal-700 text-white text-sm font-semibold">
+          Add to plan
+        </button>
+      </div>
+    </Sheet>
+  );
+}
+
+function MenuView({ menuView, setMenuView, meals, recipes, memberById, onNewMeal, onEditMeal, onNewRecipe, onEditRecipe, onSendToShop, onAddToWeek }) {
   const recipeById = Object.fromEntries(recipes.map((r) => [r.id, r]));
   // build the 7 days starting today
   const days = Array.from({ length: 7 }, (_, i) => toKey(addDays(new Date(), i)));
@@ -2643,8 +2698,9 @@ function MenuView({ menuView, setMenuView, meals, recipes, memberById, onNewMeal
                 </button>
                 <div className="flex gap-2 pt-3">
                   <button onClick={() => onEditRecipe(r)} className="flex-1 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold">View / edit</button>
-                  <button onClick={() => onSendToShop(r.ingredients)} className="flex-1 py-2 rounded-xl bg-teal-50 border border-teal-600 text-teal-800 text-xs font-bold">Add to shopping 🛒</button>
+                  <button onClick={() => onAddToWeek(r)} className="flex-1 py-2 rounded-xl bg-teal-700 text-white text-xs font-bold">Add to week 📅</button>
                 </div>
+                <button onClick={() => onSendToShop(r.ingredients)} className="mt-2 w-full py-2 rounded-xl bg-teal-50 border border-teal-600 text-teal-800 text-xs font-bold">Add to shopping 🛒</button>
               </li>
             ))}
           </ul>
@@ -2747,6 +2803,7 @@ function RecipeEditor({ initial, isNew, members, onSave, onDelete, onSendToShop,
   const [aiErr, setAiErr] = useState("");
   const [ideas, setIdeas] = useState(null);   // array of {name, description} or null
   const [ideaHint, setIdeaHint] = useState("");
+  const [aiOpen, setAiOpen] = useState(false); // AI panel collapsed by default
 
   const generateRecipe = async (dish) => {
     if (!dish.trim()) { setAiErr("Type a dish name first (e.g. chicken tacos)."); return; }
@@ -2776,10 +2833,19 @@ function RecipeEditor({ initial, isNew, members, onSave, onDelete, onSendToShop,
   return (
     <Sheet onClose={onClose} title={isNew ? "New recipe" : "Recipe"}>
       <div className="space-y-3">
-        {/* AI helper */}
-        {onAskAI && (
+        {/* AI helper — collapsed by default, tap to expand */}
+        {onAskAI && !aiOpen && (
+          <button onClick={() => setAiOpen(true)}
+            className="w-full py-2.5 rounded-xl bg-teal-50/60 border border-teal-200 text-teal-800 text-sm font-bold">
+            ✨ Ask AI for help
+          </button>
+        )}
+        {onAskAI && aiOpen && (
           <div className="rounded-2xl bg-teal-50/60 border border-teal-200 p-3 space-y-2">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-teal-800">✨ Ask AI</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-teal-800">✨ Ask AI</p>
+              <button onClick={() => setAiOpen(false)} className="text-[11px] font-semibold text-slate-400">Hide</button>
+            </div>
             <div className="flex gap-2">
               <input value={r.title} onChange={(e) => set("title", e.target.value)} placeholder="Type a dish… e.g. chicken tacos"
                 className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
