@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.9.2";
+const APP_VERSION = "2.9.3";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -977,7 +977,7 @@ function App() {
       {/* section toggle (top level) */}
       <div className="px-4 pb-2 overflow-x-auto">
         <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold w-fit whitespace-nowrap">
-          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["ideas","Ideas"],["menu","Menu"]].map(([sec,label]) => {
+          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["menu","Menu"],["shop","Shopping"],["ideas","Ideas"]].map(([sec,label]) => {
             const active = section === sec;
             const go = () => setView(sec === "calendar" ? (CALENDAR_VIEWS.includes(view) ? view : "month") : sec);
             return (
