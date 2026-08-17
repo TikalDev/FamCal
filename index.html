@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.8.2";
+const APP_VERSION = "2.9.1";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -300,6 +300,10 @@ const rowToFav = (r) => ({ id: r.id, name: r.name, history: r.history || [] });
 const favToRow = (f) => ({ id: f.id, name: f.name, history: f.history || [] });
 const rowToIdea = (r) => ({ id: r.id, title: r.title, description: r.description || "", memberIds: r.member_ids || [], status: r.status || "active", historyReason: r.history_reason || null, ts: r.ts, by: r.by_member });
 const ideaToRow = (i) => ({ id: i.id, title: i.title, description: i.description || null, member_ids: i.memberIds || [], status: i.status || "active", history_reason: i.historyReason || null, ts: i.ts, by_member: i.by || null });
+const rowToRecipe = (r) => ({ id: r.id, title: r.title, instructions: r.instructions || "", ingredients: r.ingredients || [], memberIds: r.member_ids || [], ts: r.ts, by: r.by_member });
+const recipeToRow = (r) => ({ id: r.id, title: r.title, instructions: r.instructions || null, ingredients: r.ingredients || [], member_ids: r.memberIds || [], ts: r.ts, by_member: r.by || null });
+const rowToMeal = (r) => ({ id: r.id, date: r.date, slot: r.slot || "", title: r.title || "", recipeId: r.recipe_id || null, ingredients: r.ingredients || [], ts: r.ts, by: r.by_member });
+const mealToRow = (m) => ({ id: m.id, date: m.date, slot: m.slot || "", title: m.title || "", recipe_id: m.recipeId || null, ingredients: m.ingredients || [], ts: m.ts, by_member: m.by || null });
 const rowToPurchase = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, date: r.date, by: r.by_member || null, favId: r.fav_id || null });
 const purchaseToRow = (p) => ({ id: p.id, name: p.name, store: p.store || null, price: (p.price === "" || p.price == null) ? null : Number(p.price), date: p.date, by_member: p.by || null, fav_id: p.favId || null });
 
@@ -318,6 +322,8 @@ function App() {
   const [purchases, setPurchases] = useState([]);
   const [cleared, setCleared] = useState([]);   // cleared history (tasks/events/chores)
   const [ideas, setIdeas] = useState([]);       // family ideas (active + history)
+  const [recipes, setRecipes] = useState([]);   // saved recipe collection
+  const [meals, setMeals] = useState([]);       // weekly meal plan entries
   const [privEvents, setPrivEvents] = useState(() => lsGet("famcal:private", []));
   const [me, setMe] = useState(() => lsGet("famcal:me", null));
   const [lastSeen, setLastSeen] = useState(() => lsGet("famcal:seen", null));
@@ -333,6 +339,9 @@ function App() {
   const [choreEditing, setChoreEditing] = useState(null);
   const [ideaEditing, setIdeaEditing] = useState(null);      // "new" | idea object | null
   const [ideaHistoryOpen, setIdeaHistoryOpen] = useState(false);
+  const [recipeEditing, setRecipeEditing] = useState(null);  // "new" | recipe | null
+  const [mealEditing, setMealEditing] = useState(null);      // {date, slot?} for new | meal | null
+  const [menuView, setMenuView] = useState("planner");       // "planner" | "recipes"
   const [shopEditing, setShopEditing] = useState(null);
   const [favManage, setFavManage] = useState(false);
   const [historyView, setHistoryView] = useState(false);
@@ -351,7 +360,7 @@ function App() {
   // ---- fetch everything ----
   const fetchAll = useCallback(async () => {
     try {
-      const [f, e, t, c, sh, fv, pu, cl, id] = await Promise.all([
+      const [f, e, t, c, sh, fv, pu, cl, id, rc, mp] = await Promise.all([
         sb.from("family").select("*").eq("id", 1).maybeSingle(),
         sb.from("events").select("*"),
         sb.from("tasks").select("*"),
@@ -361,9 +370,11 @@ function App() {
         sb.from("purchases").select("*"),
         sb.from("cleared_history").select("*"),
         sb.from("ideas").select("*"),
+        sb.from("recipes").select("*"),
+        sb.from("meal_plan").select("*"),
       ]);
       if (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error || cl.error) throw (f.error || e.error || t.error || c.error || sh.error || fv.error || pu.error || cl.error);
-      // ideas is a newer table; if it errors (not created yet) just treat as empty rather than blocking the whole app
+      // ideas/recipes/meal_plan are newer tables; if they error (not created yet) treat as empty rather than blocking the whole app
       setFam(f.data ? { name: f.data.name, members: f.data.members || [], passcode: f.data.passcode || null, adminPin: f.data.admin_pin || null } : null);
       setEvents((e.data || []).map(rowToEvent));
       setTasks((t.data || []).map(rowToTask));
@@ -372,6 +383,8 @@ function App() {
       setFavorites((fv.data || []).map(rowToFav));
       setPurchases((pu.data || []).map(rowToPurchase));
       setCleared((cl.data || []).map(rowToCleared));
+      setRecipes((rc && !rc.error ? (rc.data || []) : []).map(rowToRecipe));
+      setMeals((mp && !mp.error ? (mp.data || []) : []).map(rowToMeal));
       setIdeas((id && !id.error ? (id.data || []) : []).map(rowToIdea));
       setOffline(false);
     } catch (err) {
@@ -624,6 +637,52 @@ function App() {
     await fetchAll(); setSyncing(false);
   };
 
+  // ---------- recipes & meal plan ----------
+  const saveRecipe = async (rIn) => {
+    setSyncing(true);
+    const r = { ...rIn, ingredients: (rIn.ingredients || []).map((s) => s.trim()).filter(Boolean), ts: Date.now(), by: me || rIn.by || null };
+    await sb.from("recipes").upsert(recipeToRow(r));
+    await fetchAll(); setSyncing(false); setRecipeEditing(null);
+  };
+  const deleteRecipe = async (id) => {
+    setSyncing(true);
+    await sb.from("recipes").delete().eq("id", id);
+    // also remove any meal-plan entries pointing at it
+    await sb.from("meal_plan").delete().eq("recipe_id", id);
+    await fetchAll(); setSyncing(false); setRecipeEditing(null);
+  };
+  const saveMeal = async (mIn) => {
+    setSyncing(true);
+    const m = { ...mIn, ingredients: (mIn.ingredients || []).map((s) => s.trim()).filter(Boolean), ts: Date.now(), by: me || mIn.by || null };
+    await sb.from("meal_plan").upsert(mealToRow(m));
+    await fetchAll(); setSyncing(false); setMealEditing(null);
+  };
+  const deleteMeal = async (id) => {
+    setSyncing(true);
+    await sb.from("meal_plan").delete().eq("id", id);
+    await fetchAll(); setSyncing(false); setMealEditing(null);
+  };
+  // send a recipe's ingredients to the shopping list (only items not already there)
+  const sendIngredientsToShop = async (ingredients) => {
+    const list = (ingredients || []).map((s) => s.trim()).filter(Boolean);
+    if (list.length === 0) { alert("No ingredients to add."); return; }
+    setSyncing(true);
+    let added = 0, skipped = 0;
+    for (const name of list) {
+      if (shop.some((s) => s.name.toLowerCase() === name.toLowerCase())) { skipped++; continue; }
+      const fav = favorites.find((f) => f.name.toLowerCase() === name.toLowerCase());
+      await sb.from("shop").insert(shopToRow({
+        id: uid(), name, store: "", price: "",
+        favId: fav ? fav.id : null, lastStore: "", lastPrice: "",
+        checked: false, ts: Date.now(), by: me || null,
+      }));
+      added++;
+    }
+    await fetchAll(); setSyncing(false);
+    alert(`Added ${added} item${added === 1 ? "" : "s"} to the shopping list${skipped ? ` (${skipped} already there)` : ""}.`);
+  };
+
+
   const deleteChore = async (id) => {
     setSyncing(true);
     await sb.from("chores").delete().eq("id", id);
@@ -874,6 +933,7 @@ function App() {
     : view === "chores" ? "Chore rotation"
     : view === "shop" ? "Shopping list"
     : view === "ideas" ? "Family ideas"
+    : view === "menu" ? "Meal planner"
     : "Family board";
 
   const openNew = (dayKey, memberId) => {
@@ -917,7 +977,7 @@ function App() {
       {/* section toggle (top level) */}
       <div className="px-4 pb-2 overflow-x-auto">
         <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold w-fit whitespace-nowrap">
-          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["ideas","Ideas"]].map(([sec,label]) => {
+          {[["calendar","Calendar"],["tasks","Tasks"],["chores","Chores"],["shop","Shopping"],["ideas","Ideas"],["menu","Menu"]].map(([sec,label]) => {
             const active = section === sec;
             const go = () => setView(sec === "calendar" ? (CALENDAR_VIEWS.includes(view) ? view : "month") : sec);
             return (
@@ -1050,9 +1110,16 @@ function App() {
           onLetsDoIt={promoteIdeaToEvent} onMaybe={(idea) => moveIdeaToHistory(idea, "maybe")}
           onHistory={() => setIdeaHistoryOpen(true)} historyCount={historyIdeas.length} />
       )}
+      {view === "menu" && (
+        <MenuView menuView={menuView} setMenuView={setMenuView}
+          meals={meals} recipes={recipes} memberById={memberById}
+          onNewMeal={(preset) => setMealEditing(preset || "new")} onEditMeal={setMealEditing}
+          onNewRecipe={() => setRecipeEditing("new")} onEditRecipe={setRecipeEditing}
+          onSendToShop={sendIngredientsToShop} />
+      )}
 
       {/* floating add */}
-      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : view === "shop" ? setShopEditing("new") : view === "ideas" ? setIdeaEditing("new") : setAddChoosing(true))}
+      <button onClick={() => (view === "tasks" ? setTaskEditing("new") : view === "chores" ? setChoreEditing("new") : view === "shop" ? setShopEditing("new") : view === "ideas" ? setIdeaEditing("new") : view === "menu" ? (menuView === "recipes" ? setRecipeEditing("new") : setMealEditing("new")) : setAddChoosing(true))}
         className="fixed bottom-5 right-5 w-14 h-14 rounded-full bg-teal-700 text-white text-3xl leading-none shadow-lg active:scale-95 transition-transform"
         aria-label="Add">+</button>
 
@@ -1151,6 +1218,33 @@ function App() {
       {ideaHistoryOpen && (
         <IdeaHistory ideas={historyIdeas} memberById={memberById}
           onReAccept={reAcceptIdea} onDelete={deleteIdea} onClose={() => setIdeaHistoryOpen(false)} />
+      )}
+
+      {/* recipe editor */}
+      {recipeEditing && (
+        <RecipeEditor
+          key={recipeEditing === "new" ? "new" : recipeEditing.id}
+          initial={recipeEditing === "new"
+            ? { id: uid(), title: "", instructions: "", ingredients: [""], memberIds: [] }
+            : { ...recipeEditing, ingredients: recipeEditing.ingredients?.length ? recipeEditing.ingredients : [""] }}
+          isNew={recipeEditing === "new"}
+          members={fam.members}
+          onSave={saveRecipe} onDelete={deleteRecipe} onSendToShop={sendIngredientsToShop} onClose={() => setRecipeEditing(null)}
+        />
+      )}
+
+      {/* meal-plan entry editor */}
+      {mealEditing && (
+        <MealEditor
+          key={mealEditing === "new" || !mealEditing.id ? "new" : mealEditing.id}
+          initial={mealEditing === "new"
+            ? { id: uid(), date: todayKey(), slot: "Dinner", title: "", recipeId: null, ingredients: [] }
+            : mealEditing.id ? { ...mealEditing, ingredients: mealEditing.ingredients || [] }
+            : { id: uid(), date: mealEditing.date || todayKey(), slot: mealEditing.slot || "Dinner", title: "", recipeId: null, ingredients: [] }}
+          isNew={mealEditing === "new" || !mealEditing.id}
+          recipes={recipes}
+          onSave={saveMeal} onDelete={deleteMeal} onClose={() => setMealEditing(null)}
+        />
       )}
 
       {/* family settings */}
@@ -2437,6 +2531,227 @@ function IdeaHistory({ ideas, memberById, onReAccept, onDelete, onClose }) {
           })}
         </ul>
       )}
+    </Sheet>
+  );
+}
+
+// ============================================================
+// MENU (meal planner + recipe collection)
+// ============================================================
+function MenuView({ menuView, setMenuView, meals, recipes, memberById, onNewMeal, onEditMeal, onNewRecipe, onEditRecipe, onSendToShop }) {
+  const recipeById = Object.fromEntries(recipes.map((r) => [r.id, r]));
+  // build the 7 days starting today
+  const days = Array.from({ length: 7 }, (_, i) => toKey(addDays(new Date(), i)));
+  const mealsByDate = {};
+  for (const m of meals) (mealsByDate[m.date] ||= []).push(m);
+
+  const toggle = (
+    <div className="flex rounded-full bg-slate-200 p-0.5 text-xs font-semibold">
+      <button onClick={() => setMenuView("planner")} className={`px-4 py-1.5 rounded-full transition-colors ${menuView === "planner" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>This week</button>
+      <button onClick={() => setMenuView("recipes")} className={`px-4 py-1.5 rounded-full transition-colors ${menuView === "recipes" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>Recipes</button>
+    </div>
+  );
+
+  if (menuView === "recipes") {
+    return (
+      <div className="px-4 pb-28">
+        <div className="flex items-center justify-between pb-3">{toggle}
+          <button onClick={onNewRecipe} className="px-3.5 py-1.5 rounded-full bg-teal-700 text-white text-xs font-semibold">+ Recipe</button>
+        </div>
+        {recipes.length === 0 ? (
+          <div className="text-center py-14">
+            <p className="text-4xl pb-2">📖</p>
+            <p className="text-sm text-slate-400">No recipes saved yet.<br />Tap "+ Recipe" to add one — title, ingredients, and how to make it.</p>
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {[...recipes].sort((a,b) => a.title.localeCompare(b.title)).map((r) => (
+              <li key={r.id} className="rounded-2xl bg-white border border-slate-200 p-4">
+                <button onClick={() => onEditRecipe(r)} className="w-full text-left">
+                  <span className="block text-base font-bold text-slate-800">{r.title}</span>
+                  <span className="block text-[11px] text-slate-400 pt-0.5">{(r.ingredients || []).length} ingredient{(r.ingredients||[]).length === 1 ? "" : "s"}</span>
+                </button>
+                <div className="flex gap-2 pt-3">
+                  <button onClick={() => onEditRecipe(r)} className="flex-1 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold">View / edit</button>
+                  <button onClick={() => onSendToShop(r.ingredients)} className="flex-1 py-2 rounded-xl bg-teal-50 border border-teal-600 text-teal-800 text-xs font-bold">Add to shopping 🛒</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
+  // planner
+  return (
+    <div className="px-4 pb-28">
+      <div className="flex items-center justify-between pb-3">{toggle}
+        <button onClick={() => onNewMeal("new")} className="px-3.5 py-1.5 rounded-full bg-teal-700 text-white text-xs font-semibold">+ Meal</button>
+      </div>
+      <div className="space-y-3">
+        {days.map((d) => {
+          const list = (mealsByDate[d] || []).sort((a,b) => (a.slot || "").localeCompare(b.slot || ""));
+          const dd = parseKey(d);
+          return (
+            <div key={d} className="rounded-2xl bg-white border border-slate-200 p-3.5">
+              <div className="flex items-center justify-between pb-1.5">
+                <p className="text-sm font-bold text-slate-800">{d === todayKey() ? "Today" : `${WEEKDAYS[dd.getDay()]} ${ordinal(dd.getDate())}`}</p>
+                <button onClick={() => onNewMeal({ date: d })} className="text-teal-700 text-lg leading-none font-bold px-1" aria-label="Add meal">+</button>
+              </div>
+              {list.length === 0 ? (
+                <p className="text-[12px] text-slate-300 py-1">No meals planned</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {list.map((m) => {
+                    const r = m.recipeId ? recipeById[m.recipeId] : null;
+                    const name = r ? r.title : m.title;
+                    const ings = r ? (r.ingredients || []) : (m.ingredients || []);
+                    return (
+                      <li key={m.id} className="flex items-center gap-2.5">
+                        <button onClick={() => onEditMeal(m)} className="flex-1 min-w-0 text-left flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200 px-3 py-2">
+                          {m.slot && <span className="text-[10px] font-bold uppercase text-teal-700 shrink-0">{m.slot}</span>}
+                          <span className="text-sm font-semibold text-slate-800 truncate">{name || "(untitled)"}</span>
+                          {r && <span className="text-[10px] text-slate-400 shrink-0">📖</span>}
+                        </button>
+                        {ings.length > 0 && (
+                          <button onClick={() => onSendToShop(ings)} className="shrink-0 px-2 py-1.5 rounded-lg bg-teal-50 text-teal-700 text-[11px] font-bold" title="Add ingredients to shopping">🛒</button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-slate-400 text-center pt-4">Plan the week ahead. Link a saved recipe to a meal, and tap 🛒 to send its ingredients to the shopping list.</p>
+    </div>
+  );
+}
+
+// Reusable ingredient entry: add-one-at-a-time rows + a "paste a list" box.
+function IngredientList({ ingredients, setIngredients }) {
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const rows = ingredients.length ? ingredients : [];
+  const setRow = (i, v) => { const arr = [...rows]; arr[i] = v; setIngredients(arr); };
+  const addRow = () => setIngredients([...rows, ""]);
+  const removeRow = (i) => setIngredients(rows.filter((_, j) => j !== i));
+  const applyPaste = () => {
+    const items = pasteText.split(/\n|,/).map((s) => s.trim()).filter(Boolean);
+    if (items.length) setIngredients([...rows.filter((r) => r.trim()), ...items]);
+    setPasteText(""); setPasteOpen(false);
+  };
+  return (
+    <div className="space-y-1.5">
+      {rows.map((ing, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <input value={ing} onChange={(e) => setRow(i, e.target.value)} placeholder={`Ingredient ${i + 1}`}
+            className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+          <button onClick={() => removeRow(i)} aria-label="Remove" className="shrink-0 text-slate-300 px-1.5 text-sm">✕</button>
+        </div>
+      ))}
+      <div className="flex items-center gap-3 pt-0.5">
+        <button onClick={addRow} className="text-xs font-semibold text-teal-700">+ Add ingredient</button>
+        <button onClick={() => setPasteOpen((o) => !o)} className="text-xs font-semibold text-slate-500">{pasteOpen ? "Cancel paste" : "Paste a list"}</button>
+      </div>
+      {pasteOpen && (
+        <div className="pt-1">
+          <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} rows={4}
+            placeholder={"Paste ingredients — one per line\n2 eggs\n1 cup flour\nmilk"}
+            className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600 resize-none" />
+          <button onClick={applyPaste} className="mt-1.5 w-full py-2 rounded-xl bg-teal-700 text-white text-xs font-bold">Add these</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecipeEditor({ initial, isNew, members, onSave, onDelete, onSendToShop, onClose }) {
+  const [r, setR] = useState(initial);
+  const set = (k,v) => setR((x) => ({ ...x, [k]: v }));
+  const ok = r.title.trim();
+  return (
+    <Sheet onClose={onClose} title={isNew ? "New recipe" : "Recipe"}>
+      <div className="space-y-3">
+        <Field label="Recipe name">
+          <input autoFocus value={r.title} onChange={(e) => set("title", e.target.value)} placeholder="Spaghetti bolognese, taco night…"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+        </Field>
+        <Field label="Ingredients">
+          <IngredientList ingredients={r.ingredients} setIngredients={(arr) => set("ingredients", arr)} />
+        </Field>
+        <Field label="How to make it (optional)">
+          <textarea value={r.instructions} onChange={(e) => set("instructions", e.target.value)} rows={5} placeholder="Steps, notes, cooking time…"
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600 resize-none" />
+        </Field>
+        {(r.ingredients || []).some((s) => s.trim()) && (
+          <button onClick={() => onSendToShop(r.ingredients)} className="w-full py-2.5 rounded-xl bg-teal-50 border border-teal-600 text-teal-800 text-sm font-bold">Add ingredients to shopping 🛒</button>
+        )}
+        <div className="flex gap-2 pt-1">
+          {!isNew && <button onClick={() => { if (confirm(`Delete "${r.title}"? This also removes it from any planned meals.`)) onDelete(r.id); }} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Delete</button>}
+          <button disabled={!ok} onClick={() => onSave({ ...r, title: r.title.trim() })}
+            className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
+            {isNew ? "Save recipe" : "Save changes"}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function MealEditor({ initial, isNew, recipes, onSave, onDelete, onClose }) {
+  const [m, setM] = useState(initial);
+  const set = (k,v) => setM((x) => ({ ...x, [k]: v }));
+  const useRecipe = !!m.recipeId;
+  const SLOTS = ["Breakfast", "Lunch", "Dinner", "Snack"];
+  const ok = m.date && (m.recipeId || m.title.trim());
+  return (
+    <Sheet onClose={onClose} title={isNew ? "Plan a meal" : "Edit meal"}>
+      <div className="space-y-3">
+        <Field label="Day">
+          <input type="date" value={m.date} onChange={(e) => set("date", e.target.value)}
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+        </Field>
+        <Field label="Meal">
+          <select value={SLOTS.includes(m.slot) ? m.slot : "Dinner"} onChange={(e) => set("slot", e.target.value)}
+            className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600">
+            {SLOTS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Field>
+        {recipes.length > 0 && (
+          <Field label="Pick a saved recipe (optional)">
+            <select value={m.recipeId || ""} onChange={(e) => set("recipeId", e.target.value || null)}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600">
+              <option value="">— none, I'll type it —</option>
+              {[...recipes].sort((a,b) => a.title.localeCompare(b.title)).map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+            </select>
+          </Field>
+        )}
+        {!useRecipe && (
+          <>
+            <Field label="What's for this meal?">
+              <input value={m.title} onChange={(e) => set("title", e.target.value)} placeholder="Leftovers, order pizza, grandma's stew…"
+                className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+            </Field>
+            <Field label="Ingredients for this meal (optional)">
+              <IngredientList ingredients={m.ingredients || []} setIngredients={(arr) => set("ingredients", arr)} />
+            </Field>
+          </>
+        )}
+        {useRecipe && (
+          <p className="text-[11px] text-slate-400">Ingredients come from the linked recipe. Tap 🛒 on the meal to send them to shopping.</p>
+        )}
+        <div className="flex gap-2 pt-1">
+          {!isNew && <button onClick={() => onDelete(m.id)} className="px-4 py-3 rounded-xl bg-red-50 text-red-600 text-sm font-semibold">Remove</button>}
+          <button disabled={!ok} onClick={() => onSave({ ...m, title: m.title.trim() })}
+            className={`flex-1 py-3 rounded-xl text-sm font-semibold text-white ${ok ? "bg-teal-700" : "bg-slate-300"}`}>
+            {isNew ? "Add to plan" : "Save"}
+          </button>
+        </div>
+      </div>
     </Sheet>
   );
 }
