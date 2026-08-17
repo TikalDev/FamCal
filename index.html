@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.9.3";
+const APP_VERSION = "2.10.0";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -148,6 +148,8 @@ function occursOn(ev, k) {
   }
   if (ev.date === k) return true;
   if (!ev.recur || ev.recur === "none" || k < ev.date) return false;
+  // recurring events stop after their "repeats until" date, if set
+  if (ev.recurUntil && k > ev.recurUntil) return false;
   const n = diffDays(ev.date, k);
   if (ev.recur === "weekly") return n % 7 === 0;
   if (ev.recur === "biweekly") return n % 14 === 0;
@@ -286,8 +288,8 @@ const lsGet = (k, fallback) => { try { const v = localStorage.getItem(k); return
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 // ---------- supabase row <-> app object ----------
-const rowToEvent = (r) => ({ id: r.id, title: r.title, date: r.date, endDate: r.end_date || "", time: r.time || "", notes: r.notes || "", phone: r.phone || "", location: r.location || "", recur: r.recur || "none", memberIds: r.member_ids || [], doneOn: r.done_on || [], cleared: !!r.cleared, ts: r.ts, by: r.by_member, visibility: "family" });
-const eventToRow = (e) => ({ id: e.id, title: e.title, date: e.date, end_date: e.endDate || null, time: e.time || null, notes: e.notes || null, phone: e.phone || null, location: e.location || null, recur: e.recur || "none", member_ids: e.memberIds, done_on: e.doneOn || [], cleared: !!e.cleared, ts: e.ts, by_member: e.by || null });
+const rowToEvent = (r) => ({ id: r.id, title: r.title, date: r.date, endDate: r.end_date || "", recurUntil: r.recur_until || "", time: r.time || "", notes: r.notes || "", phone: r.phone || "", location: r.location || "", recur: r.recur || "none", memberIds: r.member_ids || [], doneOn: r.done_on || [], cleared: !!r.cleared, ts: r.ts, by: r.by_member, visibility: "family" });
+const eventToRow = (e) => ({ id: e.id, title: e.title, date: e.date, end_date: e.endDate || null, recur_until: e.recurUntil || null, time: e.time || null, notes: e.notes || null, phone: e.phone || null, location: e.location || null, recur: e.recur || "none", member_ids: e.memberIds, done_on: e.doneOn || [], cleared: !!e.cleared, ts: e.ts, by_member: e.by || null });
 const rowToTask = (r) => ({ id: r.id, title: r.title, dueDate: r.due_date || "", notes: r.notes || "", done: !!r.done, cleared: !!r.cleared, memberIds: r.member_ids || [], ts: r.ts, by: r.by_member });
 const taskToRow = (t) => ({ id: t.id, title: t.title, due_date: t.dueDate || null, notes: t.notes || null, done: !!t.done, cleared: !!t.cleared, member_ids: t.memberIds, ts: t.ts, by_member: t.by || null });
 const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "weekly", weekdays: r.weekdays || [], monthDay: r.month_day || null, memberIds: r.member_ids || [], anchorPeriod: r.anchor_period || 0, anchorIndex: r.anchor_index || 0, lastDone: r.last_done || null, clearedPeriod: r.cleared_period ?? null, ts: r.ts, by: r.by_member });
@@ -541,6 +543,15 @@ function App() {
     }
     setSyncing(false);
     setEditing(null); setDetail(null);
+  };
+
+  // set/clear the "repeats until" end date on a recurring event, live from the detail popup
+  const setRecurUntil = async (ev, dateK) => {
+    setSyncing(true);
+    await sb.from("events").update({ recur_until: dateK || null }).eq("id", ev.id);
+    await fetchAll();
+    setSyncing(false);
+    setDetail((d) => (d && d.id === ev.id ? { ...d, recurUntil: dateK } : d));
   };
 
   const saveTask = async (tIn) => {
@@ -1159,7 +1170,8 @@ function App() {
       {detail && !editing && (
         <EventDetail ev={detail} memberById={memberById} colorOf={colorOf} bgOf={bgOf}
           onClose={() => setDetail(null)} onEdit={() => setEditing(detail)} onDelete={() => deleteEvent(detail.id)}
-          onMarkDoneAndClear={(ev) => { markEventDoneAndClear(ev); setDetail(null); }} />
+          onMarkDoneAndClear={(ev) => { markEventDoneAndClear(ev); setDetail(null); }}
+          onSetRecurUntil={setRecurUntil} />
       )}
 
       {/* event editor */}
@@ -1419,7 +1431,7 @@ function DaySheet({ dayKey, allEvents, memberById, colorOf, bgOf, onClose, onDet
   );
 }
 
-function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete, onMarkDoneAndClear }) {
+function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete, onMarkDoneAndClear, onSetRecurUntil }) {
   const tel = digitsOf(ev.phone);
   return (
     <Sheet onClose={onClose} title="Event">
@@ -1432,7 +1444,11 @@ function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete,
             ? `${fmtLong(ev.seriesDate || ev.date)} → ${fmtLong(ev.endDate)}`
             : `${fmtLong(ev.date)}${ev.time ? ` · ${fmtTime(ev.time)}` : " · All day"}`}
         </p>
-        {ev.recur !== "none" && <p className="text-xs font-semibold text-teal-700 pt-1">🔁 {RECUR_LABELS[ev.recur]}</p>}
+        {ev.recur !== "none" && (
+          <p className="text-xs font-semibold text-teal-700 pt-1">
+            🔁 {RECUR_LABELS[ev.recur]}{ev.recurUntil ? ` · until ${fmtLong(ev.recurUntil)}` : ""}
+          </p>
+        )}
         <div className="flex flex-wrap gap-1.5 pt-3">
           {peopleOf(ev).map((id) => memberById[id] && (
             <span key={id} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-xs font-semibold text-slate-700">
@@ -1445,6 +1461,22 @@ function EventDetail({ ev, memberById, colorOf, bgOf, onClose, onEdit, onDelete,
         {ev.phone && <p className="text-sm text-slate-600 pt-1">📞 {ev.phone}</p>}
         {ev.notes && <p className="text-sm text-slate-600 pt-3 whitespace-pre-wrap">{ev.notes}</p>}
       </div>
+
+      {/* repeats-until quick control for recurring events */}
+      {ev.recur && ev.recur !== "none" && onSetRecurUntil && (
+        <div className="pt-3 rounded-xl bg-white border border-slate-200 p-3">
+          <label className="block text-[11px] font-bold uppercase tracking-wide text-slate-400 pb-1.5">Repeats until</label>
+          <div className="flex items-center gap-2">
+            <input type="date" value={ev.recurUntil || ""} min={ev.date}
+              onChange={(e) => onSetRecurUntil(ev, e.target.value)}
+              className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+            {ev.recurUntil && (
+              <button onClick={() => onSetRecurUntil(ev, "")} className="shrink-0 px-3 py-2 rounded-xl bg-slate-100 text-slate-500 text-xs font-semibold">Clear</button>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-400 pt-1.5">{ev.recurUntil ? `Series ends after ${fmtLong(ev.recurUntil)}.` : "Set a date to end this repeating series."}</p>
+        </div>
+      )}
 
       {/* quick actions: call / text / directions */}
       {(tel || ev.location) && (
@@ -3170,6 +3202,16 @@ function EventEditor({ initial, isNew, members, onSave, onDelete, onClose }) {
             <p className="text-[11px] text-slate-400 pt-1">This event repeats — changes apply to every occurrence.</p>
           )}
         </Field>
+        {ev.recur && ev.recur !== "none" && (
+          <Field label="Repeats until (optional)">
+            <input type="date" value={ev.recurUntil || ""} min={ev.date}
+              onChange={(e) => setEv((x) => ({ ...x, recurUntil: e.target.value }))}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-600" />
+            <p className="text-[11px] text-slate-400 pt-1">
+              {ev.recurUntil ? `Stops repeating after ${fmtLong(ev.recurUntil)}.` : "Leave blank to repeat forever. Set a date to end the series (e.g. end of the season)."}
+            </p>
+          </Field>
+        )}
         <Field label="Who's going (tap all that apply)">
           <div className="flex flex-wrap gap-2">
             {members.map((m) => {
