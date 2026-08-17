@@ -81,7 +81,7 @@ const sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON
 
 // ---------- constants ----------
 const POLL_MS = 30000;
-const APP_VERSION = "2.9.1";
+const APP_VERSION = "2.9.2";
 const MEMBER_COLORS = [
   { name: "Coral", hex: "#E2564B" }, { name: "Tangerine", hex: "#E87A33" },
   { name: "Amber", hex: "#E8A13A" }, { name: "Lime", hex: "#7CB342" },
@@ -294,8 +294,8 @@ const rowToChore = (r) => ({ id: r.id, title: r.title, cadence: r.cadence || "we
 const choreToRow = (c) => ({ id: c.id, title: c.title, cadence: c.cadence, weekdays: c.weekdays || [], month_day: c.monthDay || null, member_ids: c.memberIds, anchor_period: c.anchorPeriod || 0, anchor_index: c.anchorIndex || 0, last_done: c.lastDone || null, cleared_period: c.clearedPeriod ?? null, ts: c.ts, by_member: c.by || null });
 const rowToCleared = (r) => ({ id: r.id, kind: r.kind, refId: r.ref_id || null, title: r.title, detail: r.detail || "", memberIds: r.member_ids || [], clearedAt: r.cleared_at, by: r.by_member || null });
 const clearedToRow = (h) => ({ id: h.id, kind: h.kind, ref_id: h.refId || null, title: h.title, detail: h.detail || null, member_ids: h.memberIds || [], cleared_at: h.clearedAt, by_member: h.by || null });
-const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, favId: r.fav_id || null, checked: !!r.checked, lastStore: r.last_store || "", lastPrice: r.last_price == null ? "" : r.last_price, ts: r.ts, by: r.by_member });
-const shopToRow = (s) => ({ id: s.id, name: s.name, store: s.store || null, price: (s.price === "" || s.price == null) ? null : Number(s.price), fav_id: s.favId || null, checked: !!s.checked, last_store: s.lastStore || null, last_price: (s.lastPrice === "" || s.lastPrice == null) ? null : Number(s.lastPrice), ts: s.ts, by_member: s.by || null });
+const rowToShop = (r) => ({ id: r.id, name: r.name, store: r.store || "", price: r.price == null ? "" : r.price, favId: r.fav_id || null, checked: !!r.checked, lastStore: r.last_store || "", lastPrice: r.last_price == null ? "" : r.last_price, source: r.source || "general", ts: r.ts, by: r.by_member });
+const shopToRow = (s) => ({ id: s.id, name: s.name, store: s.store || null, price: (s.price === "" || s.price == null) ? null : Number(s.price), fav_id: s.favId || null, checked: !!s.checked, last_store: s.lastStore || null, last_price: (s.lastPrice === "" || s.lastPrice == null) ? null : Number(s.lastPrice), source: s.source || "general", ts: s.ts, by_member: s.by || null });
 const rowToFav = (r) => ({ id: r.id, name: r.name, history: r.history || [] });
 const favToRow = (f) => ({ id: f.id, name: f.name, history: f.history || [] });
 const rowToIdea = (r) => ({ id: r.id, title: r.title, description: r.description || "", memberIds: r.member_ids || [], status: r.status || "active", historyReason: r.history_reason || null, ts: r.ts, by: r.by_member });
@@ -674,7 +674,7 @@ function App() {
       await sb.from("shop").insert(shopToRow({
         id: uid(), name, store: "", price: "",
         favId: fav ? fav.id : null, lastStore: "", lastPrice: "",
-        checked: false, ts: Date.now(), by: me || null,
+        checked: false, source: "menu", ts: Date.now(), by: me || null,
       }));
       added++;
     }
@@ -2800,39 +2800,55 @@ function ShoppingView({ shop, favorites, onToggle, onEdit, onClearChecked, onAdd
           <p className="text-4xl pb-2">🛒</p>
           <p className="text-sm text-slate-400">List is empty. Tap + to add something,<br />or tap a favorite above.</p>
         </div>
-      ) : (
-        <ul className="space-y-1.5">
-          {shop.map((s) => {
-            const fav = s.favId ? favById[s.favId] : null;
-            const hint = fav ? priceHint(fav) : "";
-            return (
-              <li key={s.id} className="rounded-xl bg-white border border-slate-200">
-                <div className="flex items-center gap-3 p-3">
-                  <button onClick={() => onToggle(s.id)} aria-label={s.checked ? "Uncheck" : "Check"}
-                    className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${s.checked ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
-                    {s.checked && <span className="text-xs font-bold">✓</span>}
-                  </button>
-                  <button onClick={() => onEdit(s)} className="flex-1 min-w-0 text-left">
-                    <span className={`block text-sm font-semibold truncate ${s.checked ? "line-through text-slate-400" : "text-slate-800"}`}>
-                      {s.name}
-                    </span>
-                    <span className="block text-[11px] text-slate-400 truncate">
-                      {[s.store, money(s.price)].filter(Boolean).join(" · ")
-                        || (hint ? hint
-                          : (s.lastStore || s.lastPrice !== "" ? `Last: ${money(s.lastPrice)}${s.lastStore ? ` ${s.lastStore}` : ""}`.trim()
-                            : "tap to add store/price"))}
-                    </span>
-                  </button>
-                  {!s.favId && (
-                    <button onClick={() => onSaveFav(s)} aria-label="Save as favorite" title="Save as favorite" className="text-slate-300 text-lg px-1">☆</button>
-                  )}
-                  {s.favId && <span className="text-amber-400 text-lg px-1" title="Saved favorite">★</span>}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      ) : (() => {
+        // sort: unchecked before checked, then newest-added first within each
+        const order = (a, b) => (a.checked !== b.checked ? (a.checked ? 1 : -1) : (b.ts || 0) - (a.ts || 0));
+        const general = shop.filter((s) => (s.source || "general") !== "menu").sort(order);
+        const menu = shop.filter((s) => s.source === "menu").sort(order);
+        const row = (s) => {
+          const fav = s.favId ? favById[s.favId] : null;
+          const hint = fav ? priceHint(fav) : "";
+          return (
+            <li key={s.id} className="rounded-xl bg-white border border-slate-200">
+              <div className="flex items-center gap-3 p-3">
+                <button onClick={() => onToggle(s.id)} aria-label={s.checked ? "Uncheck" : "Check"}
+                  className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${s.checked ? "bg-teal-700 border-teal-700 text-white" : "border-slate-300 bg-white"}`}>
+                  {s.checked && <span className="text-xs font-bold">✓</span>}
+                </button>
+                <button onClick={() => onEdit(s)} className="flex-1 min-w-0 text-left">
+                  <span className={`block text-sm font-semibold truncate ${s.checked ? "line-through text-slate-400" : "text-slate-800"}`}>{s.name}</span>
+                  <span className="block text-[11px] text-slate-400 truncate">
+                    {[s.store, money(s.price)].filter(Boolean).join(" · ")
+                      || (hint ? hint
+                        : (s.lastStore || s.lastPrice !== "" ? `Last: ${money(s.lastPrice)}${s.lastStore ? ` ${s.lastStore}` : ""}`.trim()
+                          : "tap to add store/price"))}
+                  </span>
+                </button>
+                {!s.favId && (
+                  <button onClick={() => onSaveFav(s)} aria-label="Save as favorite" title="Save as favorite" className="text-slate-300 text-lg px-1">☆</button>
+                )}
+                {s.favId && <span className="text-amber-400 text-lg px-1" title="Saved favorite">★</span>}
+              </div>
+            </li>
+          );
+        };
+        const sectionHeader = (label, count) => (
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 pt-3 pb-1.5">{label} <span className="text-slate-300">({count})</span></p>
+        );
+        return (
+          <div>
+            {/* General always shows its header when there are menu items too, so the split is clear */}
+            {general.length > 0 && (<>
+              {menu.length > 0 && sectionHeader("General", general.length)}
+              <ul className="space-y-1.5">{general.map(row)}</ul>
+            </>)}
+            {menu.length > 0 && (<>
+              {sectionHeader("From menu 🍽️", menu.length)}
+              <ul className="space-y-1.5">{menu.map(row)}</ul>
+            </>)}
+          </div>
+        );
+      })()}
 
       {checkedCount > 0 && (
         <button onClick={onClearChecked} className="mt-4 w-full py-3 rounded-xl bg-teal-700 text-white text-sm font-semibold">
